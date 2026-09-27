@@ -362,7 +362,7 @@ async function judge(text) {
   } catch (err) {
     if (err.name === 'AbortError') return;
     // 서버가 없거나(로컬 파일로 연 경우) 일시 오류면 이번만 키워드 판단
-    modeText.textContent = 'AI 판단 실패 → 키워드 판단으로 대신했어요';
+    modeText.textContent = `AI 판단 실패(${err.message}) → 키워드 판단으로 대신했어요. 원인: /api/emotion?debug=1`;
     show(localGuess(text));
   }
 }

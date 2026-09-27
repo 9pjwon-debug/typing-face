@@ -184,12 +184,59 @@ async function classify(text) {
   return normalize(JSON.parse(json));
 }
 
+/* ------------------------- 진단 -------------------------
+   브라우저로 /api/emotion?debug=1 을 열면 AI 가 왜 안 붙는지 알려준다.
+   키 값은 절대 내보내지 않고, 있는지 여부와 앞 4글자 모양만 보여준다. */
+
+function hintFor(status, message) {
+  if (status === 400 && /API key/i.test(message)) return 'GEMINI_API_KEY 값이 올바르지 않습니다. AI Studio 에서 키를 다시 복사해 넣고 Redeploy 하세요.';
+  if (status === 400 && /location|region|country/i.test(message)) return '이 지역에서는 Gemini 무료 API 를 쓸 수 없습니다. Vercel Settings → Functions → Region 을 미국(iad1 등)으로 바꿔보세요.';
+  if (status === 400) return '요청 형식 문제입니다. EMOTION_MODEL 을 지우거나 다른 모델로 바꿔보세요.';
+  if (status === 403) return '키가 거부됐습니다. 키가 삭제됐거나, Generative Language API 가 꺼져 있거나, 키에 API 제한이 걸려 있을 수 있습니다.';
+  if (status === 404) return '모델 이름을 찾을 수 없습니다. Vercel 환경변수 EMOTION_MODEL 을 gemini-3.1-flash-lite 등 AI Studio 에 보이는 모델 이름으로 바꾸세요.';
+  if (status === 429) return '무료 한도에 걸렸습니다. 잠시 후 다시 시도하거나 내일 다시 확인하세요.';
+  return '잠시 후 다시 시도해보세요.';
+}
+
+async function diagnose(res) {
+  var key = process.env.GEMINI_API_KEY || '';
+  var out = {
+    keySet: !!key,
+    keyLooksLike: key ? key.slice(0, 4) + '... (' + key.length + '자)' : null,
+    model: MODEL,
+    redis: !!client.detect(),
+    test: null,
+    hint: null
+  };
+  if (!key) {
+    out.hint = 'GEMINI_API_KEY 가 이 배포에 없습니다. Vercel Settings → Environment Variables 에 정확히 이 이름으로 넣고 ' +
+      '(Production 체크), Deployments 에서 Redeploy 해야 적용됩니다. 비슷한 이름: ' +
+      JSON.stringify(Object.keys(process.env).filter(function (k) { return /GEMINI|GOOGLE|API_KEY/i.test(k); }));
+    return res.status(200).json(out);
+  }
+  try {
+    var r = await classify('오늘 너무 행복해!');
+    out.test = { ok: true, result: r };
+    out.hint = '정상입니다. 페이지를 새로고침해서 다시 해보세요.';
+  } catch (err) {
+    var status = err instanceof QuotaError ? 429 : err.status || null;
+    out.test = { ok: false, status: status, error: String(err && err.message || err).slice(0, 300) };
+    out.hint = hintFor(status, out.test.error);
+  }
+  return res.status(200).json(out);
+}
+
 /* ------------------------- 핸들러 ------------------------- */
 
 module.exports = async function (req, res) {
   res.setHeader('Cache-Control', 'no-store');
 
   if (req.method === 'OPTIONS') return res.status(204).end();
+  if (req.method === 'GET' && req.query && req.query.debug) {
+    var dip = String(req.headers['x-forwarded-for'] || 'unknown').split(',')[0].trim();
+    if (limited(dip)) return res.status(429).json({ ok: false, error: '잠시 후 다시 시도해주세요' });
+    return diagnose(res);
+  }
   if (req.method !== 'POST') {
     res.setHeader('Allow', 'POST');
     return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
