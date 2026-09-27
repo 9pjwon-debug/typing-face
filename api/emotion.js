@@ -4,19 +4,20 @@
    POST /api/emotion {text}
      → { ok, configured:true, main, label, mix:{joy,sad,angry,surprise,fear,disgust,shy} }
 
-   Claude API(Messages)를 fetch 로 직접 호출한다. npm 의존성은 없다.
+   Google Gemini API(generateContent)를 fetch 로 직접 호출한다. npm 의존성은 없다.
    API 키는 서버에만 있고 브라우저로는 절대 나가지 않는다.
 
    환경변수
-     ANTHROPIC_API_KEY  (필수)  없으면 configured:false 를 돌려주고,
-                                페이지는 브라우저 안의 키워드 판단으로 동작한다.
-     EMOTION_MODEL      (선택)  기본 claude-haiku-4-5 (타이핑마다 부르므로 빠른 모델)
-     EMOTION_DAILY_LIMIT(선택)  하루 최대 Claude 호출 수. 기본 1000. 넘으면 limited:true 를
-                                돌려주고 페이지는 키워드 판단으로 버틴다 (요금 폭주 방지).
+     GEMINI_API_KEY     (필수)  Google AI Studio 에서 무료로 발급. 없으면 configured:false 를
+                                돌려주고, 페이지는 브라우저 안의 키워드 판단으로 동작한다.
+     EMOTION_MODEL      (선택)  기본 gemini-3.5-flash-lite (무료 등급이 있는 빠른 모델)
+     EMOTION_DAILY_LIMIT(선택)  하루 최대 Gemini 호출 수. 기본 1000. 넘으면 limited:true 를
+                                돌려주고 페이지는 키워드 판단으로 버틴다.
+                                Gemini 무료 한도(429)에 걸려도 똑같이 limited:true 로 처리한다.
 
    API 호출 줄이기
      - Redis 가 연결돼 있으면 같은 문장의 판단 결과를 7일간 캐시한다.
-       캐시 적중은 Claude 를 부르지 않고, 하루 호출 수에도 들어가지 않는다.
+       캐시 적중은 Gemini 를 부르지 않고, 하루 호출 수에도 들어가지 않는다.
      - Redis 가 없으면 캐시와 하루 제한 없이 동작한다 (IP 분당 제한만).
    =================================================================== */
 
@@ -26,7 +27,7 @@ var client = require('./redis-client.js');
 var EMOTIONS = ['joy', 'sad', 'angry', 'surprise', 'fear', 'disgust', 'shy'];
 var MAIN = EMOTIONS.concat(['neutral']);
 
-var MODEL = process.env.EMOTION_MODEL || 'claude-haiku-4-5';
+var MODEL = process.env.EMOTION_MODEL || 'gemini-3.5-flash-lite';
 var MAX_TEXT = 200;        // 한 번에 판단할 최대 글자 수
 var RATE_LIMIT = 60;       // 분당 요청 수 (IP 기준, 인스턴스 메모리)
 var TIMEOUT = 8000;
@@ -39,7 +40,9 @@ var SYSTEM = [
   '문장이 아직 덜 끝났을 수 있으니 지금까지의 내용으로 가장 그럴듯하게 판단한다.',
   'mix 는 각 감정의 세기(0~1)이며, 여러 감정이 섞일 수 있다. 감정이 없으면 모두 0 에 가깝게 둔다.',
   'shy 는 부끄러움·설렘·수줍음이다. 칭찬을 받거나 고백하는 말이면 joy 와 shy 를 함께 올린다.',
-  'main 은 가장 두드러진 감정(감정이 거의 없으면 neutral), label 은 그 감정을 나타내는 한국어 한 단어(예: 기쁨, 설렘, 서운함, 짜증)다.'
+  'main 은 가장 두드러진 감정(감정이 거의 없으면 neutral), label 은 그 감정을 나타내는 한국어 한 단어(예: 기쁨, 설렘, 서운함, 짜증)다.',
+  '다른 말 없이 JSON 하나만 출력한다. 형식:',
+  '{"main":"joy|sad|angry|surprise|fear|disgust|shy|neutral","label":"기쁨","mix":{"joy":0.8,"sad":0,"angry":0,"surprise":0.1,"fear":0,"disgust":0,"shy":0.3}}'
 ].join('\n');
 
 var SCHEMA = {
@@ -121,42 +124,64 @@ function normalize(raw) {
   return { main: main, label: label || '무표정', mix: mix };
 }
 
-/* ------------------------- Claude 호출 ------------------------- */
+/* ------------------------- Gemini 호출 ------------------------- */
 
-async function classify(text) {
+/** 무료 한도 초과(429). 핸들러가 limited:true 로 바꿔서 돌려준다. */
+function QuotaError() { this.name = 'QuotaError'; this.message = 'Gemini 무료 한도 초과'; }
+
+async function callGemini(text, useSchema) {
+  var generationConfig = { responseMimeType: 'application/json', temperature: 0.2, maxOutputTokens: 1024 };
+  if (useSchema) generationConfig.responseJsonSchema = SCHEMA;
+
   var ctrl = new AbortController();
   var timer = setTimeout(function () { ctrl.abort(); }, TIMEOUT);
   try {
-    var res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: {
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json'
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 256,
-        system: SYSTEM,
-        output_config: { format: { type: 'json_schema', schema: SCHEMA } },
-        messages: [{ role: 'user', content: text }]
-      })
-    });
-
+    var res = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(MODEL) + ':generateContent',
+      {
+        method: 'POST',
+        signal: ctrl.signal,
+        headers: {
+          'x-goog-api-key': process.env.GEMINI_API_KEY,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [{ role: 'user', parts: [{ text: text }] }],
+          generationConfig: generationConfig
+        })
+      }
+    );
+    if (res.status === 429) throw new QuotaError();
     if (!res.ok) {
       var body = await res.text();
-      throw new Error('Claude API ' + res.status + ' ' + body.slice(0, 160));
+      var err = new Error('Gemini API ' + res.status + ' ' + body.slice(0, 160));
+      err.status = res.status;
+      throw err;
     }
-
-    var msg = await res.json();
-    if (msg.stop_reason === 'refusal') return normalize(null);
-    var block = (msg.content || []).find(function (b) { return b.type === 'text'; });
-    if (!block) throw new Error('응답에 텍스트가 없습니다');
-    return normalize(JSON.parse(block.text));
+    return await res.json();
   } finally {
     clearTimeout(timer);
   }
+}
+
+async function classify(text) {
+  var data;
+  try {
+    data = await callGemini(text, true);
+  } catch (err) {
+    // 모델이 JSON 스키마 옵션을 받지 않으면(400) 프롬프트의 형식 안내만으로 한 번 더 시도
+    if (err.status !== 400) throw err;
+    data = await callGemini(text, false);
+  }
+
+  var cand = data && data.candidates && data.candidates[0];
+  var parts = (cand && cand.content && cand.content.parts) || [];
+  var raw = parts.map(function (p) { return p.text || ''; }).join('').trim();
+  if (!raw) return normalize(null); // 안전 필터 등으로 비어 있으면 무표정
+
+  var json = raw.replace(/^```(?:json)?\s*/i, '').replace(/```$/, '');
+  return normalize(JSON.parse(json));
 }
 
 /* ------------------------- 핸들러 ------------------------- */
@@ -170,7 +195,7 @@ module.exports = async function (req, res) {
     return res.status(405).json({ ok: false, error: 'Method Not Allowed' });
   }
 
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!process.env.GEMINI_API_KEY) {
     return res.status(200).json({ ok: true, configured: false });
   }
 
@@ -197,6 +222,9 @@ module.exports = async function (req, res) {
     await cacheSet(text, out);
     return res.status(200).json(Object.assign({ ok: true, configured: true }, out));
   } catch (err) {
+    if (err instanceof QuotaError) {
+      return res.status(200).json({ ok: true, configured: true, limited: true });
+    }
     return res.status(502).json({ ok: false, configured: true, error: String(err && err.message || err) });
   }
 };

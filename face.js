@@ -1,7 +1,7 @@
 /* ===================================================================
    face.js  -  글자를 칠 때마다 표정이 바뀌는 3D 얼굴
 
-   입력 ─(키워드 판단으로 즉시 반응, 한글 조합이 끝나고 0.9초 멈추면)→ /api/emotion (Claude)
+   입력 ─(키워드 판단으로 즉시 반응, 한글 조합이 끝나고 0.9초 멈추면)→ /api/emotion (Gemini)
         → {mix:{joy,sad,...}} → 감정별 표정 프리셋을 섞어 blendshape 목표값 계산
         → 매 프레임 목표값으로 부드럽게 이동
 
@@ -270,7 +270,7 @@ const MIN_CHARS = 2;
 let composing = false;
 let timer = 0;
 let ctrl = null;
-let aiOff = false;         // true → 이 탭에서는 키워드 판단만
+let aiOffUntil = 0;        // 이 시각까지는 키워드 판단만 (Infinity = 이 탭에서 계속)
 let lastText = '';
 const cache = new Map();   // 문장 → 판단 결과
 
@@ -312,7 +312,7 @@ function schedule() {
   }
 
   const guess = localGuess(text);
-  if (aiOff || text.length < MIN_CHARS) {
+  if (aiOff() || text.length < MIN_CHARS) {
     lastText = text;
     return show(guess);
   }
@@ -323,8 +323,12 @@ function schedule() {
   timer = setTimeout(() => judge(text), AI_DELAY);
 }
 
-function giveUpAi(message, text) {
-  aiOff = true;
+function aiOff() {
+  return performance.now() < aiOffUntil;
+}
+
+function giveUpAi(message, text, ms) {
+  aiOffUntil = performance.now() + ms;
   modeText.textContent = message;
   show(localGuess(text));
 }
@@ -332,7 +336,7 @@ function giveUpAi(message, text) {
 async function judge(text) {
   lastText = text;
   if (cache.has(text)) return show(cache.get(text));
-  if (aiOff) return show(localGuess(text));
+  if (aiOff()) return show(localGuess(text));
 
   ctrl && ctrl.abort();
   ctrl = new AbortController();
@@ -345,10 +349,11 @@ async function judge(text) {
     });
     const data = await res.json();
     if (data.configured === false) {
-      return giveUpAi('서버에 ANTHROPIC_API_KEY 가 없어 간단한 키워드 판단으로 동작 중', text);
+      return giveUpAi('서버에 GEMINI_API_KEY 가 없어 간단한 키워드 판단으로 동작 중', text, Infinity);
     }
     if (data.limited) {
-      return giveUpAi('오늘 AI 사용량을 다 써서 키워드 판단으로 동작 중', text);
+      // 무료 한도는 분당 제한도 있어서, 1분 쉬었다가 다시 AI 를 시도한다
+      return giveUpAi('AI 무료 한도에 걸려 잠시 키워드 판단으로 동작 중', text, 60000);
     }
     if (!data.ok) throw new Error(data.error || res.status);
     modeText.textContent = '';
