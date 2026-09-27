@@ -1,7 +1,7 @@
 /* ===================================================================
    face.js  -  글자를 칠 때마다 표정이 바뀌는 3D 얼굴
 
-   입력 ─(키워드 판단으로 즉시 반응, 한글 조합이 끝나고 0.9초 멈추면)→ /api/emotion (Gemini)
+   입력 ─(키워드 판단으로 즉시 반응, 한글 조합이 끝나고 0.6초 멈추면)→ /api/emotion (Gemini)
         → {mix:{joy,sad,...}} → 감정별 표정 프리셋을 섞어 blendshape 목표값 계산
         → 매 프레임 목표값으로 부드럽게 이동
 
@@ -211,12 +211,12 @@ function frame(now) {
     for (const name in dict) {
       let goal = target[name] || 0;
       if (name === 'eyeBlink_L' || name === 'eyeBlink_R') goal = Math.max(goal, blink);
-      const speed = name.startsWith('eyeBlink') ? 0.5 : 0.12;
+      const speed = name.startsWith('eyeBlink') ? 0.5 : 0.22;
       inf[dict[name]] += (goal - inf[dict[name]]) * speed;
     }
   }
 
-  blushNow += (blushTarget - blushNow) * 0.08;
+  blushNow += (blushTarget - blushNow) * 0.15;
   for (const s of blushSprites) s.material.opacity = blushNow * 0.55;
 
   // 숨쉬기 + 살짝 고개 흔들기
@@ -238,11 +238,11 @@ const statusText = document.getElementById('status-text');
 const modeText = document.getElementById('mode');
 
 /* API 호출 줄이기
-   - 키워드 판단으로 표정을 먼저 바로 바꾸고, AI 는 타이핑이 0.9초 멈췄을 때만 부른다
+   - 키워드 판단으로 표정을 먼저 바로 바꾸고, AI 는 타이핑이 0.6초 멈췄을 때만 부른다
    - 공백만 바뀐 경우, 한 번 판단한 문장은 다시 부르지 않는다 (이 탭 안 캐시)
    - 2글자 미만은 AI 를 부르지 않는다
    - 서버에 키가 없거나 하루 사용량을 넘기면 이 탭에서는 더 이상 부르지 않는다 */
-const AI_DELAY = 900;
+const AI_DELAY = 600;
 const MIN_CHARS = 2;
 
 let composing = false;

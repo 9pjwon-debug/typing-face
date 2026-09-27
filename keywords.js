@@ -9,6 +9,8 @@
    - 정규식도 쓸 수 있다 (조사 '와' 와 감탄사 '와!' 를 구분할 때 등).
    - 부정: "안 좋아", "좋지 않아", "행복하지 않아" → 기쁨이 아니라 슬픔으로 뒤집는다.
    - 강조: "너무", "진짜", "완전" 등이 있으면 세기를 올린다. ㅋ·ㅠ·! 는 개수만큼 세진다.
+   - 끊어 읽기: 긴 문장은 문장부호·쉼표·"근데/하지만"·"~는데/~지만" 에서 끊고,
+     가장 마지막 구절(방금 친 부분)의 감정만 본다. 앞 구절 감정은 표정 유지로 이어진다.
    =================================================================== */
 
 export const EMOTIONS = ['joy', 'sad', 'angry', 'surprise', 'fear', 'disgust', 'shy'];
@@ -24,7 +26,7 @@ const DICT = {
     { label: '신남', w: 1, words: ['최고', '짱', '대박좋', '개좋', '존좋', '굿굿', '앗싸', '아싸', '예스', '만세', '야호', '와우', '개꿀', '꿀잼', '개웃', '웃겨', '웃기', '재밌', '재미있', '웃음', '히히', '헤헤', '하하', '호호', '킥킥', 'lol', 'lmao', 'yay', 'happy', 'great', 'awesome', 'nice'] },
     { label: '고마움', w: 0.8, words: ['고마', '고맙', '감사', '땡큐', '쌩큐', 'thank', 'thx'] },
     { label: '축하', w: 0.9, words: ['축하', '합격', '성공', '이겼', '승리', '해냈', '붙었', '당첨', '생일'] },
-    { label: '사랑', w: 0.9, words: ['사랑', '예쁘', '이쁘', '멋있', '멋지', '멋져', '잘생', '훌륭', '최애', 'love'] },
+    { label: '사랑', w: 0.9, flip: 'angry', words: ['사랑', '예쁘', '이쁘', '멋있', '멋지', '멋져', '잘생', '훌륭', '최애', 'love'] },
     { label: '만족', w: 0.6, words: ['맛있', '맛나', '존맛', 'jmt', '편하', '편해', '시원하', '따뜻하', '포근', '힐링', '괜찮네'] },
     { label: '기쁨', w: 0.9, words: ['😊', '😄', '😁', '😆', '😂', '🤣', '😃', '😀', '🙂', '😍', '❤', '💕', '💖', '👍', '🎉', '✨', '^^', '^_^', ':)', ':D'] },
     // --- 추가: 신조어·구어체·오타 ---
@@ -144,7 +146,28 @@ function repeatScore(text, re, per, max) {
   return Math.min(max, n * per);
 }
 
+// 구절을 나누는 곳: 문장부호, 쉼표, 반전 접속사, "~는데 / ~지만" 뒤
+const BREAK_AFTER = /(는데|은데|인데|던데|한데|지만|더니)\s+/g;
+const BREAK = /[.!?…~\n,]+|\s(?:근데|그런데|하지만|그러나|그래도|그치만|그렇지만|근데도|그런데도|반면에?|오히려)\s/;
+
+/** 마지막 구절 (감정이 들어있을 만한 가장 최근 부분) */
+export function lastClause(input) {
+  const parts = String(input || '')
+    .replace(BREAK_AFTER, '$1\n')
+    .split(BREAK)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  // "좋아, 진짜" 처럼 마지막 조각이 너무 짧으면 앞 구절과 붙여서 본다
+  let last = parts.pop() || '';
+  while (parts.length && last.replace(/\s/g, '').length <= 3) last = parts.pop() + ' ' + last;
+  return last;
+}
+
 export function localGuess(input) {
+  return scoreText(lastClause(input));
+}
+
+function scoreText(input) {
   const text = String(input || '').toLowerCase();
   const score = Object.fromEntries(EMOTIONS.map((e) => [e, 0]));
   const best = {}; // 감정 → { w, label }
@@ -159,8 +182,14 @@ export function localGuess(input) {
       for (const word of group.words) {
         for (const hit of findAll(text, word)) {
           if (negated(text, hit)) {
-            const to = FLIP[emotion];
-            if (to) add(to, group.w * 0.8, to === 'sad' ? '실망' : LABELS[to]);
+            // "사랑스럽지 않다고" 처럼 호감을 부정하면 못마땅, "행복하지 않아" 는 실망
+            const to = group.flip || FLIP[emotion];
+            if (to === 'angry') {
+              add('angry', group.w * 0.8, '못마땅');
+              add('sad', group.w * 0.4, '못마땅');
+            } else if (to) {
+              add(to, group.w * 0.8, to === 'sad' ? '실망' : LABELS[to]);
+            }
           } else {
             add(emotion, group.w, group.label);
           }
