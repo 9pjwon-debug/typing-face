@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { EMOTIONS, localGuess } from './keywords.js';
-import { preloadLandmarker, fileToCanvas, detectFace, applyPhoto } from './photo.js';
+import { preloadLandmarker, fileToCanvas, detectFace, applyPhoto, measureDummy } from './photo.js';
 
 const COLORS = {
   joy: '#ffd84d', sad: '#6aa8ff', angry: '#ff5a4f', surprise: '#ff9f43',
@@ -427,19 +427,12 @@ function setIntroMsg(text, kind) {
   introMsg.className = kind || '';
 }
 
-// 사진 고르는 창이 열리는 동안 얼굴 인식 도구를 미리 받아둔다
-document.getElementById('photo-btn').addEventListener('click', () => {
-  preloadLandmarker().catch(() => {});
-});
-
-photoInput.addEventListener('change', async () => {
-  const file = photoInput.files && photoInput.files[0];
-  photoInput.value = '';
-  if (!file) return;
+/** 사진(canvas) → 얼굴 찾기 → 더미 측정 → 입히기. 공통 처리 */
+async function usePhoto(getCanvas) {
   intro.classList.add('working');
   setIntroMsg('얼굴 찾는 중...', 'busy');
   try {
-    const [canvasImg] = await Promise.all([fileToCanvas(file), modelReady]);
+    const [canvasImg] = await Promise.all([getCanvas(), modelReady]);
     const lm = await detectFace(canvasImg);
     if (!lm) {
       setIntroMsg('얼굴을 찾지 못했어요. 얼굴이 크게 나온 정면 사진으로 다시 해보세요.', 'error');
@@ -447,7 +440,16 @@ photoInput.addEventListener('change', async () => {
     }
     if (eyes.length !== 2) throw new Error('3D 얼굴의 눈을 찾지 못했어요');
     if (undoPhoto) undoPhoto();
-    undoPhoto = applyPhoto({ pivot, head: face, eyes, teeth }, canvasImg, lm);
+    undoPhoto = null;
+    let dummy = null;
+    try {
+      dummy = await measureDummy({ renderer, scene, camera, pivot, head: face, eyes, hide: blushSprites });
+    } catch (err) {
+      console.warn('더미 측정 실패, 5점 맞춤으로 대신합니다', err);
+    }
+    if (!dummy) console.warn('더미 얼굴 점을 찾지 못해 5점 맞춤으로 대신합니다');
+    else console.info('더미 얼굴 점 측정 완료: 약 100점 맞춤');
+    undoPhoto = applyPhoto({ pivot, head: face, eyes, teeth }, canvasImg, lm, dummy);
     closeIntro();
   } catch (err) {
     console.error(err);
@@ -455,6 +457,96 @@ photoInput.addEventListener('change', async () => {
   } finally {
     intro.classList.remove('working');
   }
+}
+
+// 사진 고르는 창이 열리는 동안 얼굴 인식 도구를 미리 받아둔다
+document.getElementById('photo-btn').addEventListener('click', () => {
+  preloadLandmarker().catch(() => {});
+});
+
+photoInput.addEventListener('change', () => {
+  const file = photoInput.files && photoInput.files[0];
+  photoInput.value = '';
+  if (file) usePhoto(() => fileToCanvas(file));
+});
+
+/* ------------------------- 가이드 카메라 ------------------------- */
+
+const cam = document.getElementById('camera');
+const camVideo = document.getElementById('cam-video');
+const camBox = document.getElementById('cam-box');
+let camStream = null;
+let camFacing = 'user';
+
+async function startCamera() {
+  stopCamera();
+  camStream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: camFacing, width: { ideal: 1280 }, height: { ideal: 1280 } },
+    audio: false
+  });
+  camVideo.srcObject = camStream;
+  camVideo.classList.toggle('mirror', camFacing === 'user');
+  await camVideo.play();
+}
+
+function stopCamera() {
+  if (camStream) camStream.getTracks().forEach((t) => t.stop());
+  camStream = null;
+  camVideo.srcObject = null;
+}
+
+function closeCamera() {
+  stopCamera();
+  cam.hidden = true;
+}
+
+document.getElementById('camera-btn').addEventListener('click', async () => {
+  preloadLandmarker().catch(() => {});
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setIntroMsg('이 브라우저에서는 카메라를 쓸 수 없어요. "앨범에서 고르기"를 이용해주세요.', 'error');
+    return;
+  }
+  cam.hidden = false;
+  try {
+    await startCamera();
+  } catch (err) {
+    console.error(err);
+    closeCamera();
+    setIntroMsg('카메라를 켜지 못했어요. 카메라 권한을 허용하거나 "앨범에서 고르기"를 이용해주세요.', 'error');
+  }
+});
+
+document.getElementById('cam-cancel').addEventListener('click', closeCamera);
+
+document.getElementById('cam-flip').addEventListener('click', async () => {
+  camFacing = camFacing === 'user' ? 'environment' : 'user';
+  try { await startCamera(); } catch (err) { console.error(err); }
+});
+
+// 화면에 보이는 영역(가이드 기준)만 잘라서 찍는다. 셀카는 보이는 그대로(좌우 반전) 저장
+document.getElementById('cam-shot').addEventListener('click', () => {
+  const vw = camVideo.videoWidth;
+  const vh = camVideo.videoHeight;
+  if (!vw || !vh) return;
+  const bw = camBox.clientWidth;
+  const bh = camBox.clientHeight;
+  const scale = Math.max(bw / vw, bh / vh);
+  const sw = bw / scale;
+  const sh = bh / scale;
+  const sx = (vw - sw) / 2;
+  const sy = (vh - sh) / 2;
+  const out = Math.min(1, 1024 / Math.max(sw, sh));
+  const c = document.createElement('canvas');
+  c.width = Math.round(sw * out);
+  c.height = Math.round(sh * out);
+  const g = c.getContext('2d');
+  if (camFacing === 'user') {
+    g.translate(c.width, 0);
+    g.scale(-1, 1);
+  }
+  g.drawImage(camVideo, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  closeCamera();
+  usePhoto(async () => c);
 });
 
 document.getElementById('skip').addEventListener('click', closeIntro);

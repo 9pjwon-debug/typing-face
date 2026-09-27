@@ -48,11 +48,12 @@
       <h2>눈치 백단 더미</h2>
       <p class="desc">내 사진을 입히면 더미가 <b>내 얼굴로</b><br />웃고, 삐지고, 놀라요.</p>
 
-      <label class="btn primary" id="photo-btn">
-        📷 내 사진 입히기
+      <button type="button" class="btn primary" id="camera-btn">📷 카메라로 찍기 (가이드)</button>
+      <label class="btn" id="photo-btn">
+        🖼️ 앨범에서 고르기
         <input type="file" id="photo" accept="image/*" hidden />
       </label>
-      <button type="button" class="btn" id="skip">그냥 더미로 시작</button>
+      <button type="button" class="btn ghost" id="skip">사진 없이 그냥 더미로 시작</button>
       <button type="button" class="btn link" id="remove-photo" hidden>사진 빼고 원래 더미로</button>
 
       <p id="intro-msg" role="status"></p>
@@ -62,6 +63,28 @@
         <li>사진은 서버로 올라가지 않고 이 기기 안에서만 처리돼요</li>
         <li>본인 사진이나 허락받은 사진만 써주세요</li>
       </ul>
+    </div>
+  </section>
+
+  <!-- 가이드 카메라 -->
+  <section id="camera" hidden>
+    <div id="cam-box">
+      <video id="cam-video" playsinline autoplay muted></video>
+      <svg class="guide" viewBox="0 0 300 400" aria-hidden="true">
+        <ellipse cx="150" cy="190" rx="92" ry="122" />
+        <line class="thin" x1="70" y1="172" x2="230" y2="172" />
+        <ellipse class="part" cx="116" cy="172" rx="17" ry="8" />
+        <ellipse class="part" cx="184" cy="172" rx="17" ry="8" />
+        <path class="part" d="M150 186 L150 222 M138 226 Q150 232 162 226" />
+        <path class="part" d="M122 256 Q150 264 178 256" />
+        <line class="thin" x1="150" y1="68" x2="150" y2="312" />
+      </svg>
+      <p class="cam-tip">눈·코·입을 선에 맞추고<br />정면을 보고, 입을 다문 무표정으로</p>
+    </div>
+    <div class="cam-bar">
+      <button type="button" id="cam-cancel">취소</button>
+      <button type="button" id="cam-shot" aria-label="찍기"></button>
+      <button type="button" id="cam-flip" aria-label="카메라 전환">🔄</button>
     </div>
   </section>
 </div>

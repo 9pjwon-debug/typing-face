@@ -2,8 +2,12 @@
    photo.js  -  사진 속 얼굴을 3D 더미 얼굴에 입힌다
 
    1) MediaPipe Face Landmarker 로 사진에서 얼굴 점 478개를 찾는다 (브라우저 안에서만, 서버 전송 없음)
-   2) 사진의 눈·코·입·턱 5점과 3D 얼굴의 같은 5점을 맞추는 변환(affine)을 구한다
-   3) 3D 얼굴의 각 꼭짓점을 정면에서 사진 위로 투영해 텍스처 좌표(uv)로 쓴다
+   2) 더미 얼굴을 정면으로 한 장 렌더링해서 같은 도구로 얼굴 점을 찾는다 (measureDummy)
+   3) 눈 윤곽·눈썹·코·입술·얼굴 윤곽 약 100점을 짝지어 thin-plate spline 으로
+      "더미 화면 좌표 → 사진 좌표" 변환을 만든다. 짝지은 점에서는 정확히 맞으므로
+      사진의 눈이 더미의 눈구멍에, 입술이 입술에 딱 맞는다.
+      (더미 측정에 실패하면 눈·코·입·턱 5점 affine 으로 대신한다)
+   3') 3D 얼굴의 각 꼭짓점을 그 변환으로 사진 위에 옮겨 텍스처 좌표(uv)로 쓴다
       → 사진이 얼굴 표면에 붙어서, 표정(blendshape)이 움직이면 사진도 같이 움직인다
    4) 사진의 얼굴 윤곽 바깥(머리·귀·옆면)은 사진에서 뽑은 피부색으로 자연스럽게 섞는다
 
@@ -19,6 +23,23 @@ const MAX_SIDE = 1024;
 // MediaPipe 얼굴 윤곽(FACE_OVAL) 순서
 const OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377,
   152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109];
+
+// 더미 ↔ 사진을 짝지을 점들 (MediaPipe 얼굴 점 번호)
+const CONTROL = [...new Set([
+  // 눈 윤곽 (양쪽)
+  33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246,
+  263, 249, 390, 373, 374, 380, 381, 382, 362, 398, 384, 385, 386, 387, 388, 466,
+  // 눈썹
+  70, 63, 105, 66, 107, 336, 296, 334, 293, 300,
+  // 코
+  1, 2, 4, 5, 6, 168, 195, 98, 327, 129, 358,
+  // 입술
+  61, 291, 0, 17, 13, 14, 37, 267, 84, 314, 78, 308, 40, 270, 91, 321,
+  // 볼
+  50, 280, 205, 425,
+  // 얼굴 윤곽 (한 칸씩 건너뛰며)
+  ...OVAL.filter((_, i) => i % 2 === 0)
+])];
 
 /* ------------------------- 얼굴 점 찾기 ------------------------- */
 
@@ -93,6 +114,62 @@ function fitAffine(src, dst) {
   const pu = solve3(M, bu);
   const pv = solve3(M, bv);
   return (x, y) => ({ x: pu[0] * x + pu[1] * y + pu[2], y: pv[0] * x + pv[1] * y + pv[2] });
+}
+
+/** 가우스 소거 (여러 우변을 한 번에) */
+function solve(A, rhs) {
+  const n = A.length;
+  const m = A.map((row, i) => [...row, ...rhs.map((b) => b[i])]);
+  const k = rhs.length;
+  for (let c = 0; c < n; c++) {
+    let p = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(m[r][c]) > Math.abs(m[p][c])) p = r;
+    [m[c], m[p]] = [m[p], m[c]];
+    const piv = m[c][c] || 1e-12;
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue;
+      const f = m[r][c] / piv;
+      if (!f) continue;
+      for (let j = c; j < n + k; j++) m[r][j] -= f * m[c][j];
+    }
+  }
+  return rhs.map((_, t) => m.map((row, i) => row[n + t] / (row[i] || 1e-12)));
+}
+
+/** thin-plate spline: src[i] → dst[i] 를 정확히 지나는 부드러운 변환 */
+function fitTPS(src, dst) {
+  const n = src.length;
+  const cx = src.reduce((s, p) => s + p.x, 0) / n;
+  const cy = src.reduce((s, p) => s + p.y, 0) / n;
+  const spread = Math.sqrt(src.reduce((s, p) => s + (p.x - cx) ** 2 + (p.y - cy) ** 2, 0) / n) || 1;
+  const P = src.map((p) => ({ x: (p.x - cx) / spread, y: (p.y - cy) / spread }));
+  const U = (r2) => (r2 < 1e-12 ? 0 : 0.5 * r2 * Math.log(r2)); // r² log r
+  const N = n + 3;
+  const A = Array.from({ length: N }, () => new Array(N).fill(0));
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      A[i][j] = U((P[i].x - P[j].x) ** 2 + (P[i].y - P[j].y) ** 2);
+    }
+    A[i][i] += 1e-4; // 살짝 부드럽게 (점이 거의 겹칠 때 안정)
+    A[i][n] = A[n][i] = 1;
+    A[i][n + 1] = A[n + 1][i] = P[i].x;
+    A[i][n + 2] = A[n + 2][i] = P[i].y;
+  }
+  const bx = [...dst.map((d) => d.x), 0, 0, 0];
+  const by = [...dst.map((d) => d.y), 0, 0, 0];
+  const [wx, wy] = solve(A, [bx, by]);
+  return (x, y) => {
+    const px = (x - cx) / spread;
+    const py = (y - cy) / spread;
+    let ox = wx[n] + wx[n + 1] * px + wx[n + 2] * py;
+    let oy = wy[n] + wy[n + 1] * px + wy[n + 2] * py;
+    for (let i = 0; i < n; i++) {
+      const u = U((px - P[i].x) ** 2 + (py - P[i].y) ** 2);
+      ox += wx[i] * u;
+      oy += wy[i] * u;
+    }
+    return { x: ox, y: oy };
+  };
 }
 
 function solve3(A, b) {
@@ -172,6 +249,66 @@ function center(points) {
   return b.getCenter(new THREE.Vector3());
 }
 
+/* ------------------------- 더미 얼굴 측정 -------------------------
+   표정·고개 움직임·홍조를 잠깐 끄고 더미를 정면으로 렌더링해서 얼굴 점을 찾는다.
+   같은 카메라로 3D 꼭짓점을 화면 좌표로 투영해 두면, 화면 좌표 → 사진 좌표 변환 하나로 uv 가 나온다.
+   parts: { renderer, scene, camera, pivot, head, eyes, hide:[Object3D] } */
+
+export async function measureDummy(parts) {
+  const { renderer, scene, camera, pivot, head, eyes, hide = [] } = parts;
+  const landmarker = await preloadLandmarker();
+
+  const savedRot = pivot.rotation.clone();
+  const savedPos = pivot.position.clone();
+  const savedInf = head.morphTargetInfluences.slice();
+  const savedVis = hide.map((o) => o.visible);
+
+  pivot.rotation.set(0, 0, 0);
+  pivot.position.set(0, 0, 0);
+  head.morphTargetInfluences.fill(0);
+  hide.forEach((o) => { o.visible = false; });
+  scene.updateMatrixWorld(true);
+
+  const src = renderer.domElement;
+  const W = src.width;
+  const H = src.height;
+  const shot = document.createElement('canvas');
+  shot.width = W;
+  shot.height = H;
+  const g = shot.getContext('2d');
+  renderer.render(scene, camera);
+  g.fillStyle = '#2a2d33';
+  g.fillRect(0, 0, W, H);
+  g.drawImage(src, 0, 0); // 같은 작업 안에서 바로 복사해야 화면 버퍼가 남아 있다
+
+  const toScreen = (mesh) => {
+    const pos = mesh.geometry.attributes.position;
+    const v = new THREE.Vector3();
+    const out = [];
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).project(camera);
+      out.push({ x: (v.x + 1) / 2 * W, y: (1 - v.y) / 2 * H });
+    }
+    return out;
+  };
+  const headPx = toScreen(head);
+  const eyesPx = eyes.map(toScreen);
+
+  pivot.rotation.copy(savedRot);
+  pivot.position.copy(savedPos);
+  savedInf.forEach((v, i) => { head.morphTargetInfluences[i] = v; });
+  hide.forEach((o, i) => { o.visible = savedVis[i]; });
+
+  const res = landmarker.detect(shot);
+  const pts = res.faceLandmarks && res.faceLandmarks[0];
+  if (!pts) return null;
+  return {
+    lm: pts.map((p) => ({ x: p.x * W, y: p.y * H })),
+    headPx,
+    eyesPx
+  };
+}
+
 /* ------------------------- 사진 입히기 ------------------------- */
 
 function photoMaterial(texture, skinColor) {
@@ -193,7 +330,7 @@ function photoMaterial(texture, skinColor) {
  * parts: { pivot, head, eyes:[mesh], teeth:[mesh] }  (face.js 가 넘겨준다)
  * 반환: 원래대로 되돌리는 함수
  */
-export function applyPhoto(parts, canvas, lm) {
+export function applyPhoto(parts, canvas, lm, dummy) {
   const { pivot, head, eyes } = parts;
   pivot.updateMatrixWorld(true);
   const toLocal = new THREE.Matrix4().copy(pivot.matrixWorld).invert();
@@ -218,7 +355,16 @@ export function applyPhoto(parts, canvas, lm) {
   const photoEyes = [avg(lm[33], lm[133]), avg(lm[362], lm[263])].sort((a, b) => a.x - b.x);
   const src = [eyeCenters[0], eyeCenters[1], nose, mouth, chin];
   const dst = [photoEyes[0], photoEyes[1], lm[1], avg(lm[13], lm[14]), lm[152]];
-  const project = fitAffine(src, dst);
+  const affine = fitAffine(src, dst);
+
+  // 더미 측정이 있으면 약 100점을 정확히 맞추는 TPS, 없으면 5점 affine
+  let headMap = (p) => affine(p.x, p.y);
+  let eyeMap = headMap;
+  if (dummy) {
+    const warp = fitTPS(CONTROL.map((i) => dummy.lm[i]), CONTROL.map((i) => lm[i]));
+    headMap = (p, i) => { const q = dummy.headPx[i]; return warp(q.x, q.y); };
+    eyeMap = (p, i, e) => { const q = dummy.eyesPx[e][i]; return warp(q.x, q.y); };
+  }
 
   const oval = OVAL.map((i) => lm[i]);
   const faceWidth = Math.hypot(lm[454].x - lm[234].x, lm[454].y - lm[234].y);
@@ -227,11 +373,11 @@ export function applyPhoto(parts, canvas, lm) {
   const W = canvas.width;
   const H = canvas.height;
 
-  function build(mesh, points, useNormals) {
+  function build(mesh, points, useNormals, map) {
     const uv = new Float32Array(points.length * 2);
     const weight = new Float32Array(points.length);
     points.forEach((p, i) => {
-      const q = project(p.x, p.y);
+      const q = map(p, i);
       uv[i * 2] = q.x / W;
       uv[i * 2 + 1] = 1 - q.y / H;
       let w = smoothstep(-fade * 0.3, fade, signedDistance(q, oval));
@@ -254,8 +400,10 @@ export function applyPhoto(parts, canvas, lm) {
   texture.anisotropy = 4;
   const mat = photoMaterial(texture, sampleSkin(canvas, lm));
 
-  const undo = [build(head, headPts, true)];
-  for (const e of eyes) undo.push(build(e, localPoints(e, toLocal, false), false));
+  const undo = [build(head, headPts, true, headMap)];
+  eyes.forEach((e, k) => {
+    undo.push(build(e, localPoints(e, toLocal, false), false, (p, i) => eyeMap(p, i, k)));
+  });
   head.material = mat;
   for (const e of eyes) e.material = mat;
 
