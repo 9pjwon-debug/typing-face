@@ -12,8 +12,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
-
-const EMOTIONS = ['joy', 'sad', 'angry', 'surprise', 'fear', 'disgust', 'shy'];
+import { EMOTIONS, localGuess } from './keywords.js';
 
 const COLORS = {
   joy: '#ffd84d', sad: '#6aa8ff', angry: '#ff5a4f', surprise: '#ff9f43',
@@ -221,36 +220,6 @@ function frame(now) {
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
-
-/* ------------------------- 서버 없이 쓰는 키워드 판단 ------------------------- */
-
-const KEYWORDS = {
-  joy: ['좋아', '좋다', '사랑', '예쁘', '이쁘', '행복', '고마', '감사', '최고', '신나', '기뻐', '재밌', 'ㅋㅋ', 'ㅎㅎ', '축하', '맛있', '😊', '😂', '❤'],
-  sad: ['슬퍼', '슬프', '우울', '힘들', '외로', '서운', '보고싶', '눈물', 'ㅠ', 'ㅜ', '미안', '아쉽', '😢'],
-  angry: ['화나', '화가', '짜증', '빡치', '열받', '싫어', '싫다', '미워', '꺼져', '😡'],
-  surprise: ['헐', '대박', '진짜?', '정말?', '깜짝', '어머', '세상에', '와 ', '😮'],
-  fear: ['무서', '무섭', '겁나', '걱정', '불안', '떨려', '어떡해', '😱'],
-  disgust: ['역겨', '더러', '우웩', '토나', '징그', '극혐', '🤢'],
-  shy: ['부끄', '설레', '수줍', '좋아해', '사귀', '고백', '예쁘다고', '귀엽', '🥰', '☺']
-};
-
-const LABELS = {
-  joy: '기쁨', sad: '슬픔', angry: '화남', surprise: '놀람',
-  fear: '두려움', disgust: '역겨움', shy: '설렘', neutral: '무표정'
-};
-
-function localGuess(text) {
-  const mix = {};
-  for (const e of EMOTIONS) {
-    let n = 0;
-    for (const w of KEYWORDS[e]) if (text.includes(w)) n++;
-    mix[e] = Math.min(1, n * 0.6);
-  }
-  const bang = (text.match(/!/g) || []).length;
-  if (bang) for (const e of EMOTIONS) mix[e] = Math.min(1, mix[e] * (1 + bang * 0.2));
-  const main = EMOTIONS.reduce((a, b) => (mix[b] > (mix[a] || 0) ? b : a), 'neutral');
-  return { main, label: LABELS[main], mix };
-}
 
 /* ------------------------- 입력 처리 ------------------------- */
 
