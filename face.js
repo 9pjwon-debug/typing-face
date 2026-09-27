@@ -14,7 +14,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { EMOTIONS, localGuess } from './keywords.js';
-import { preloadLandmarker, fileToCanvas, detectFace, applyPhoto, measureDummy } from './photo.js';
+import { preloadLandmarker, preloadHairSegmenter, fileToCanvas, detectFace, detectHair, applyPhoto, measureDummy } from './photo.js';
 
 const COLORS = {
   joy: '#ffd84d', sad: '#6aa8ff', angry: '#ff5a4f', surprise: '#ff9f43',
@@ -449,7 +449,7 @@ async function usePhoto(getCanvas) {
   setIntroMsg('얼굴 찾는 중...', 'busy');
   try {
     const [canvasImg] = await Promise.all([getCanvas(), modelReady]);
-    const lm = await detectFace(canvasImg);
+    const [lm, hair] = await Promise.all([detectFace(canvasImg), detectHair(canvasImg)]);
     if (!lm) {
       setIntroMsg('얼굴을 찾지 못했어요. 얼굴이 크게 나온 정면 사진으로 다시 해보세요.', 'error');
       return;
@@ -459,13 +459,13 @@ async function usePhoto(getCanvas) {
     undoPhoto = null;
     let dummy = null;
     try {
-      dummy = await measureDummy({ renderer, scene, camera, pivot, head: face, eyes, hide: blushSprites });
+      dummy = await measureDummy({ renderer, scene, camera, pivot, head: face, eyes, teeth, hide: blushSprites });
     } catch (err) {
       console.warn('더미 측정 실패, 5점 맞춤으로 대신합니다', err);
     }
     if (!dummy) console.warn('더미 얼굴 점을 찾지 못해 5점 맞춤으로 대신합니다');
     else console.info('더미 얼굴 점 측정 완료: 약 100점 맞춤');
-    undoPhoto = applyPhoto({ pivot, head: face, eyes, teeth }, canvasImg, lm, dummy);
+    undoPhoto = applyPhoto({ pivot, head: face, eyes, teeth }, canvasImg, lm, dummy, hair);
     closeIntro();
   } catch (err) {
     console.error(err);
@@ -478,6 +478,7 @@ async function usePhoto(getCanvas) {
 // 사진 고르는 창이 열리는 동안 얼굴 인식 도구를 미리 받아둔다
 document.getElementById('photo-btn').addEventListener('click', () => {
   preloadLandmarker().catch(() => {});
+  preloadHairSegmenter().catch(() => {});
 });
 
 photoInput.addEventListener('change', () => {
@@ -518,6 +519,7 @@ function closeCamera() {
 
 document.getElementById('camera-btn').addEventListener('click', async () => {
   preloadLandmarker().catch(() => {});
+  preloadHairSegmenter().catch(() => {});
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     setIntroMsg('이 브라우저에서는 카메라를 쓸 수 없어요. "앨범에서 고르기"를 이용해주세요.', 'error');
     return;

@@ -60,20 +60,25 @@
 
 ```
 사진 ─ MediaPipe Face Landmarker (브라우저 안, 서버 전송 없음) → 얼굴 점 478개
+     ─ MediaPipe Hair Segmenter → 사진에서 머리카락 영역
      ─ 더미 얼굴도 정면으로 한 장 렌더링해서 같은 도구로 얼굴 점을 찾는다
-     ─ 눈 윤곽·눈썹·코·입술·얼굴 윤곽 약 100점을 짝지어 thin-plate spline 변환
-       (짝지은 점은 정확히 맞으므로 사진의 눈이 더미의 눈구멍에 딱 들어간다.
-        더미 측정에 실패하면 눈·코·입·턱 5점 affine 으로 대신)
-     ─ 3D 얼굴의 꼭짓점마다 그 변환으로 사진 위 위치를 구해 텍스처 좌표로 사용
-       → 사진이 얼굴 표면에 붙어서 표정(blendshape)을 따라 같이 움직인다
-     ─ 사진의 얼굴 윤곽 바깥(머리·귀·옆면)은 볼·이마에서 뽑은 피부색으로 섞는다
+     ─ 얼굴 모양 살리기: 사진 얼굴 점(눈 윤곽·눈썹·코·입술·윤곽 약 100점)을 더미 크기로 맞춘 뒤
+       thin-plate spline 으로 더미 3D 얼굴을 그 비율로 변형 (눈 사이, 얼굴 폭, 입 위치 등)
+       → 표정(blendshape)은 변형된 얼굴 위에서 그대로 움직인다
+     ─ 변형된 꼭짓점마다 사진 위 위치를 구해 텍스처 좌표로 사용 (눈이 눈구멍에 딱 맞음)
+     ─ 머리: 사진의 머리카락은 정수리·뒤통수로 이어 입히고, 빈 두피는 머리카락 평균색으로 채움
+       (머리카락이 거의 없으면 민머리로 보고 피부색)
+     ─ 귀·옆면은 볼·이마에서 뽑은 피부색
+     (더미 측정에 실패하면 눈·코·입·턱 5점 affine 으로 대신, 변형 없음)
 ```
 
 - **사진은 서버로 올라가지 않는다.** 얼굴 인식도 입히기도 모두 브라우저 안에서 한다.
 - 얼굴 인식 코드는 사진을 고를 때만 불러온다 (그냥 시작하면 받지 않는다).
-  모델 파일은 `models/face_landmarker.task` (3.7MB, Apache-2.0), 실행 코드는 jsDelivr 의 `@mediapipe/tasks-vision@1.0.1`.
+  모델 파일은 `models/face_landmarker.task` (3.7MB), `models/hair_segmenter.tflite` (0.8MB) (둘 다 MediaPipe, Apache-2.0),
+  실행 코드는 jsDelivr 의 `@mediapipe/tasks-vision@1.0.1`.
 - 잘 나오는 사진: 정면, 무표정, 밝고 얼굴이 크게 나온 사진. 웃는 사진이면 화난 표정에도 이가 보이고,
-  옆얼굴이면 한쪽이 늘어나 보인다. 얼굴 모양은 더미 그대로라 "내 얼굴 가면을 쓴 더미" 느낌이다.
+  옆얼굴이면 한쪽이 늘어나 보인다. 얼굴 윤곽·이목구비 비율은 사진을 따라가지만, 코 높이 같은
+  입체(깊이)는 더미 그대로다. 긴 머리의 옆·뒷머리는 정면 사진에 없으므로 앞머리를 이어 쓴다.
 - 본인 사진이나 허락받은 사진만 쓰도록 첫 화면에 안내한다.
 
 ## 로컬에서 보기
@@ -98,6 +103,7 @@ api/emotion.js       감정 판단 서버리스 함수. Gemini generateContent A
 api/redis-client.js  의존성 없는 Redis 클라이언트 (REST / redis:// 모두 지원, 선택)
 models/face.glb      얼굴 모델 (ARKit 52 blendshape)
 models/face_landmarker.task  MediaPipe 얼굴 점 인식 모델
+models/hair_segmenter.tflite MediaPipe 머리카락 영역 인식 모델
 ```
 
 ## API 호출 줄이기

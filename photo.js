@@ -251,11 +251,12 @@ function center(points) {
 
 /* ------------------------- 더미 얼굴 측정 -------------------------
    표정·고개 움직임·홍조를 잠깐 끄고 더미를 정면으로 렌더링해서 얼굴 점을 찾는다.
-   같은 카메라로 3D 꼭짓점을 화면 좌표로 투영해 두면, 화면 좌표 → 사진 좌표 변환 하나로 uv 가 나온다.
-   parts: { renderer, scene, camera, pivot, head, eyes, hide:[Object3D] } */
+   같은 카메라로 3D 꼭짓점을 화면 좌표로 투영해 둔다. 이 화면 좌표 위에서
+   "더미 얼굴 → 내 얼굴 비율" 변형과 "화면 → 사진" 변환을 모두 계산한다.
+   parts: { renderer, scene, camera, pivot, head, eyes, teeth, hide:[Object3D] } */
 
 export async function measureDummy(parts) {
-  const { renderer, scene, camera, pivot, head, eyes, hide = [] } = parts;
+  const { renderer, scene, camera, pivot, head, eyes, teeth = [], hide = [] } = parts;
   const landmarker = await preloadLandmarker();
 
   const savedRot = pivot.rotation.clone();
@@ -268,6 +269,7 @@ export async function measureDummy(parts) {
   head.morphTargetInfluences.fill(0);
   hide.forEach((o) => { o.visible = false; });
   scene.updateMatrixWorld(true);
+  camera.updateMatrixWorld(true);
 
   const src = renderer.domElement;
   const W = src.width;
@@ -281,18 +283,27 @@ export async function measureDummy(parts) {
   g.fillRect(0, 0, W, H);
   g.drawImage(src, 0, 0); // 같은 작업 안에서 바로 복사해야 화면 버퍼가 남아 있다
 
-  const toScreen = (mesh) => {
+  // 꼭짓점 → 화면 좌표(px) + 깊이(ndc z). 변형할 때 같은 깊이에서 되돌린다
+  const measure = (mesh) => {
     const pos = mesh.geometry.attributes.position;
     const v = new THREE.Vector3();
-    const out = [];
+    const px = [];
+    const z = new Float32Array(pos.count);
     for (let i = 0; i < pos.count; i++) {
       v.fromBufferAttribute(pos, i).applyMatrix4(mesh.matrixWorld).project(camera);
-      out.push({ x: (v.x + 1) / 2 * W, y: (1 - v.y) / 2 * H });
+      px.push({ x: (v.x + 1) / 2 * W, y: (1 - v.y) / 2 * H });
+      z[i] = v.z;
     }
-    return out;
+    return { mesh, px, z, world: mesh.matrixWorld.clone() };
   };
-  const headPx = toScreen(head);
-  const eyesPx = eyes.map(toScreen);
+  const head0 = measure(head);
+  const eyes0 = eyes.map(measure);
+  const teeth0 = teeth.map(measure);
+  const view = {
+    W, H,
+    projInv: camera.projectionMatrixInverse.clone(),
+    camWorld: camera.matrixWorld.clone()
+  };
 
   pivot.rotation.copy(savedRot);
   pivot.position.copy(savedPos);
@@ -304,111 +315,303 @@ export async function measureDummy(parts) {
   if (!pts) return null;
   return {
     lm: pts.map((p) => ({ x: p.x * W, y: p.y * H })),
-    headPx,
-    eyesPx
+    head: head0,
+    eyes: eyes0,
+    teeth: teeth0,
+    view,
+    // 호환용
+    headPx: head0.px,
+    eyesPx: eyes0.map((e) => e.px)
   };
+}
+
+/* ------------------------- 머리카락 찾기 ------------------------- */
+
+const HAIR_MODEL = 'models/hair_segmenter.tflite';
+let segmenterPromise = null;
+
+export function preloadHairSegmenter() {
+  if (!segmenterPromise) {
+    segmenterPromise = (async () => {
+      const { FilesetResolver, ImageSegmenter } = await import(`${MP}/vision_bundle.mjs`);
+      const fileset = await FilesetResolver.forVisionTasks(`${MP}/wasm`);
+      return ImageSegmenter.createFromOptions(fileset, {
+        baseOptions: { modelAssetPath: HAIR_MODEL },
+        runningMode: 'IMAGE',
+        outputConfidenceMasks: true,
+        outputCategoryMask: false
+      });
+    })().catch((err) => {
+      segmenterPromise = null;
+      throw err;
+    });
+  }
+  return segmenterPromise;
+}
+
+/** 사진에서 머리카락일 확률 지도. 실패하면 null (머리카락 없이 진행) */
+export async function detectHair(canvas) {
+  try {
+    const seg = await preloadHairSegmenter();
+    const res = seg.segment(canvas);
+    const masks = res.confidenceMasks || [];
+    const m = masks[masks.length - 1];
+    const out = m ? { data: m.getAsFloat32Array().slice(), w: m.width, h: m.height } : null;
+    if (res.close) res.close();
+    return out;
+  } catch (err) {
+    console.warn('머리카락 인식 실패', err);
+    return null;
+  }
+}
+
+function hairAt(hair, x, y, W, H) {
+  if (!hair) return 0;
+  const hx = Math.round((x / W) * hair.w);
+  const hy = Math.round((y / H) * hair.h);
+  if (hx < 0 || hy < 0 || hx >= hair.w || hy >= hair.h) return 0;
+  return hair.data[hy * hair.w + hx];
+}
+
+/** 머리카락 평균 색. 머리카락이 거의 없으면(민머리·가려짐) null */
+function sampleHair(canvas, hair, lm) {
+  if (!hair) return null;
+  const g = canvas.getContext('2d', { willReadFrequently: true });
+  const img = g.getImageData(0, 0, canvas.width, canvas.height).data;
+  const faceW = Math.hypot(lm[454].x - lm[234].x, lm[454].y - lm[234].y);
+  let r = 0, gr = 0, b = 0, n = 0, total = 0;
+  const step = Math.max(1, Math.round(canvas.width / 200));
+  for (let y = 0; y < canvas.height; y += step) {
+    for (let x = 0; x < canvas.width; x += step) {
+      if (hairAt(hair, x, y, canvas.width, canvas.height) < 0.8) continue;
+      total++;
+      const k = (y * canvas.width + x) * 4;
+      r += img[k]; gr += img[k + 1]; b += img[k + 2]; n++;
+    }
+  }
+  // 얼굴 크기에 비해 머리카락이 너무 적으면 민머리로 본다
+  const area = total * step * step;
+  if (!n || area < faceW * faceW * 0.15) return null;
+  return new THREE.Color().setRGB(r / n / 255, gr / n / 255, b / n / 255, THREE.SRGBColorSpace);
 }
 
 /* ------------------------- 사진 입히기 ------------------------- */
 
-function photoMaterial(texture, skinColor) {
+function photoMaterial(texture, skinColor, hairColor) {
   const mat = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.85 });
   const skin = { value: skinColor };
+  const hair = { value: hairColor || skinColor };
   mat.onBeforeCompile = (shader) => {
     shader.uniforms.skinColor = skin;
-    shader.vertexShader = 'attribute float faceWeight;\nvarying float vFaceWeight;\n' +
-      shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n  vFaceWeight = faceWeight;');
-    shader.fragmentShader = 'uniform vec3 skinColor;\nvarying float vFaceWeight;\n' +
+    shader.uniforms.hairColor = hair;
+    shader.vertexShader = 'attribute float faceWeight;\nattribute float hairMix;\nvarying float vFaceWeight;\nvarying float vHairMix;\n' +
+      shader.vertexShader.replace('#include <begin_vertex>',
+        '#include <begin_vertex>\n  vFaceWeight = faceWeight;\n  vHairMix = hairMix;');
+    shader.fragmentShader = 'uniform vec3 skinColor;\nuniform vec3 hairColor;\nvarying float vFaceWeight;\nvarying float vHairMix;\n' +
       shader.fragmentShader.replace('#include <map_fragment>',
-        '#include <map_fragment>\n  diffuseColor.rgb = mix(skinColor, diffuseColor.rgb, vFaceWeight);');
+        '#include <map_fragment>\n  diffuseColor.rgb = mix(mix(skinColor, hairColor, vHairMix), diffuseColor.rgb, vFaceWeight);');
   };
-  mat.customProgramCacheKey = () => 'photo-face';
+  mat.customProgramCacheKey = () => 'photo-face-hair';
   return mat;
+}
+
+/** 두 점 집합을 맞추는 닮음 변환(크기·회전·이동). 반환: [정방향, 역방향] */
+function fitSimilarity(src, dst) {
+  const n = src.length;
+  const sc = avg(...src);
+  const dc = avg(...dst);
+  let a = 0, b = 0, norm = 0;
+  for (let i = 0; i < n; i++) {
+    const px = src[i].x - sc.x, py = src[i].y - sc.y;
+    const qx = dst[i].x - dc.x, qy = dst[i].y - dc.y;
+    a += px * qx + py * qy;
+    b += px * qy - py * qx;
+    norm += px * px + py * py;
+  }
+  a /= norm; b /= norm;
+  const det = a * a + b * b;
+  const fwd = (x, y) => {
+    const px = x - sc.x, py = y - sc.y;
+    return { x: a * px - b * py + dc.x, y: b * px + a * py + dc.y };
+  };
+  const inv = (x, y) => {
+    const qx = x - dc.x, qy = y - dc.y;
+    return { x: (a * qx + b * qy) / det + sc.x, y: (-b * qx + a * qy) / det + sc.y };
+  };
+  return [fwd, inv];
 }
 
 /**
  * parts: { pivot, head, eyes:[mesh], teeth:[mesh] }  (face.js 가 넘겨준다)
+ * hair : detectHair() 결과 (없으면 null)
+ * opts : { reshape: 0~1 }  더미 얼굴을 내 얼굴 비율로 바꾸는 정도 (기본 1)
  * 반환: 원래대로 되돌리는 함수
  */
-export function applyPhoto(parts, canvas, lm, dummy) {
+export function applyPhoto(parts, canvas, lm, dummy, hair, opts = {}) {
   const { pivot, head, eyes } = parts;
+  const teeth = parts.teeth || [];
+  const reshape = opts.reshape ?? 1;
   pivot.updateMatrixWorld(true);
   const toLocal = new THREE.Matrix4().copy(pivot.matrixWorld).invert();
-
-  // 3D 얼굴 기준점 (표정이 없는 기본 모양 기준)
-  const headPts = localPoints(head, toLocal, true);
-  const eyeCenters = eyes.map((e) => center(localPoints(e, toLocal, false))).sort((a, b) => a.x - b.x);
-  const teethCenter = parts.teeth.length
-    ? center(parts.teeth.flatMap((t) => localPoints(t, toLocal, false)))
-    : null;
-
-  const box = center(headPts);
-  const width = Math.max(...headPts.map((p) => p.x)) - Math.min(...headPts.map((p) => p.x));
-  const nose = headPts.filter((p) => Math.abs(p.x - box.x) < width * 0.1).reduce((a, b) => (b.z > a.z ? b : a));
-  const front = headPts.filter((p) => Math.abs(p.x - box.x) < width * 0.06 && p.z > nose.z - width * 0.35 && p.nz > 0);
-  const chin = front.reduce((a, b) => (b.y < a.y ? b : a));
-  const mouth = teethCenter
-    ? { x: box.x, y: teethCenter.y }
-    : { x: box.x, y: nose.y + (chin.y - nose.y) * 0.45 };
-
-  // 사진 기준점 (화면 왼쪽 눈이 먼저 오게 정렬)
-  const photoEyes = [avg(lm[33], lm[133]), avg(lm[362], lm[263])].sort((a, b) => a.x - b.x);
-  const src = [eyeCenters[0], eyeCenters[1], nose, mouth, chin];
-  const dst = [photoEyes[0], photoEyes[1], lm[1], avg(lm[13], lm[14]), lm[152]];
-  const affine = fitAffine(src, dst);
-
-  // 더미 측정이 있으면 약 100점을 정확히 맞추는 TPS, 없으면 5점 affine
-  let headMap = (p) => affine(p.x, p.y);
-  let eyeMap = headMap;
-  if (dummy) {
-    const warp = fitTPS(CONTROL.map((i) => dummy.lm[i]), CONTROL.map((i) => lm[i]));
-    headMap = (p, i) => { const q = dummy.headPx[i]; return warp(q.x, q.y); };
-    eyeMap = (p, i, e) => { const q = dummy.eyesPx[e][i]; return warp(q.x, q.y); };
-  }
-
-  const oval = OVAL.map((i) => lm[i]);
-  const faceWidth = Math.hypot(lm[454].x - lm[234].x, lm[454].y - lm[234].y);
-  const fade = faceWidth * 0.08;
-
   const W = canvas.width;
   const H = canvas.height;
 
-  function build(mesh, points, useNormals, map) {
-    const uv = new Float32Array(points.length * 2);
-    const weight = new Float32Array(points.length);
-    points.forEach((p, i) => {
-      const q = map(p, i);
+  // 3D 얼굴 기준점 (표정이 없는 기본 모양 기준)
+  const headPts = localPoints(head, toLocal, true);
+  const undo = [];
+
+  let headMap;             // (꼭짓점 번호) → 사진 좌표
+  let eyeMap;              // (눈 번호, 꼭짓점 번호) → 사진 좌표
+
+  if (dummy) {
+    // 1) 사진 얼굴을 더미 화면 크기에 맞춘 뒤(닮음 변환), 그 모양으로 더미를 변형한다
+    const srcPts = CONTROL.map((i) => dummy.lm[i]);
+    const photoPts = CONTROL.map((i) => lm[i]);
+    const [toScreen, toPhoto] = fitSimilarity(photoPts, srcPts);
+    const target = photoPts.map((p, k) => {
+      const t = toScreen(p.x, p.y);
+      return { x: srcPts[k].x + (t.x - srcPts[k].x) * reshape, y: srcPts[k].y + (t.y - srcPts[k].y) * reshape };
+    });
+    const bend = fitTPS(srcPts, target);          // 더미 화면 좌표 → 변형된 화면 좌표
+    const warp = fitTPS(target, photoPts);        // 변형된 화면 좌표 → 사진 좌표 (reshape=1 이면 toPhoto 와 같다)
+    const toPhotoAt = reshape >= 0.999 ? (q) => toPhoto(q.x, q.y) : (q) => warp(q.x, q.y);
+
+    const { view } = dummy;
+    const v = new THREE.Vector3();
+    const deform = (m, newPx) => {
+      // 같은 깊이에서 새 화면 위치로 되돌려(unproject) 로컬 좌표로
+      const pos = m.mesh.geometry.attributes.position;
+      const inv = new THREE.Matrix4().copy(m.world).invert();
+      const arr = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        const q = newPx(i);
+        v.set(q.x / view.W * 2 - 1, 1 - q.y / view.H * 2, m.z[i])
+          .applyMatrix4(view.projInv).applyMatrix4(view.camWorld).applyMatrix4(inv);
+        arr[i * 3] = v.x; arr[i * 3 + 1] = v.y; arr[i * 3 + 2] = v.z;
+      }
+      const g = m.mesh.geometry;
+      const saved = g.attributes.position;
+      g.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+      g.computeBoundingSphere();
+      g.computeBoundingBox();
+      undo.push(() => {
+        g.setAttribute('position', saved);
+        g.computeBoundingSphere();
+        g.computeBoundingBox();
+      });
+    };
+    const shiftOf = (m) => {
+      const c = avg(...m.px);
+      const c2 = bend(c.x, c.y);
+      return { x: c2.x - c.x, y: c2.y - c.y };
+    };
+
+    // 얼굴: 꼭짓점마다 변형. 눈알·이는 모양을 유지하고 중심만 옮긴다
+    const headNew = dummy.head.px.map((q) => bend(q.x, q.y));
+    if (reshape > 0) deform(dummy.head, (i) => headNew[i]);
+    headMap = (i) => toPhotoAt(headNew[i]);
+
+    const eyeNew = dummy.eyes.map((m) => {
+      const d = shiftOf(m);
+      return m.px.map((q) => ({ x: q.x + d.x, y: q.y + d.y }));
+    });
+    if (reshape > 0) {
+      dummy.eyes.forEach((m, k) => deform(m, (i) => eyeNew[k][i]));
+      dummy.teeth.forEach((m) => {
+        const d = shiftOf(m);
+        deform(m, (i) => ({ x: m.px[i].x + d.x, y: m.px[i].y + d.y }));
+      });
+    }
+    eyeMap = (k, i) => toPhotoAt(eyeNew[k][i]);
+  } else {
+    // 더미 측정 실패: 눈·코·입·턱 5점 affine
+    const eyeCenters = eyes.map((e) => center(localPoints(e, toLocal, false))).sort((a, b) => a.x - b.x);
+    const teethCenter = teeth.length ? center(teeth.flatMap((t) => localPoints(t, toLocal, false))) : null;
+    const box = center(headPts);
+    const width = Math.max(...headPts.map((p) => p.x)) - Math.min(...headPts.map((p) => p.x));
+    const nose = headPts.filter((p) => Math.abs(p.x - box.x) < width * 0.1).reduce((a, b) => (b.z > a.z ? b : a));
+    const front = headPts.filter((p) => Math.abs(p.x - box.x) < width * 0.06 && p.z > nose.z - width * 0.35 && p.nz > 0);
+    const chin = front.reduce((a, b) => (b.y < a.y ? b : a));
+    const mouth = teethCenter ? { x: box.x, y: teethCenter.y } : { x: box.x, y: nose.y + (chin.y - nose.y) * 0.45 };
+    const photoEyes = [avg(lm[33], lm[133]), avg(lm[362], lm[263])].sort((a, b) => a.x - b.x);
+    const affine = fitAffine([eyeCenters[0], eyeCenters[1], nose, mouth, chin],
+      [photoEyes[0], photoEyes[1], lm[1], avg(lm[13], lm[14]), lm[152]]);
+    headMap = (i) => affine(headPts[i].x, headPts[i].y);
+    const eyePts = eyes.map((e) => localPoints(e, toLocal, false));
+    eyeMap = (k, i) => affine(eyePts[k][i].x, eyePts[k][i].y);
+  }
+
+  // 2) 어디에 사진을 쓰고, 어디를 피부색/머리색으로 채울지
+  const faceWidth = Math.hypot(lm[454].x - lm[234].x, lm[454].y - lm[234].y);
+  const fade = faceWidth * 0.08;
+  const hairColor = sampleHair(canvas, hair, lm);
+  // 얼굴 윤곽 윗부분을 이마 위(머리선 쪽)까지 늘린다. 얼굴점은 이마 중간까지만 잡히기 때문
+  const eyeLine = (lm[33].y + lm[263].y) / 2;
+  const up = { x: lm[10].x - lm[152].x, y: lm[10].y - lm[152].y };
+  const upLen = Math.hypot(up.x, up.y) || 1;
+  const oval = OVAL.map((i) => {
+    const p = lm[i];
+    const k = Math.max(0, eyeLine - p.y) / (eyeLine - lm[10].y || 1); // 이마 꼭대기 1, 눈높이 0
+    const lift = k * k * faceWidth * 0.35;
+    return { x: p.x + (up.x / upLen) * lift, y: p.y + (up.y / upLen) * lift };
+  });
+
+  // 두피 영역: 더미 머리 높이 기준 윗부분과 뒤통수 (머리카락이 있는 사람만)
+  const ys = headPts.map((p) => p.y);
+  const top = Math.max(...ys);
+  const bottom = Math.min(...ys);
+  const hgt = top - bottom;
+  const scalp = (p) => {
+    if (!hairColor) return 0;
+    const upper = smoothstep(bottom + hgt * 0.66, bottom + hgt * 0.74, p.y);
+    const back = smoothstep(-0.05, -0.35, p.nz) * smoothstep(bottom + hgt * 0.3, bottom + hgt * 0.45, p.y);
+    return Math.max(upper, back);
+  };
+
+  function build(mesh, count, map, weightOf, scalpOf) {
+    const uv = new Float32Array(count * 2);
+    const weight = new Float32Array(count);
+    const hairMix = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const q = map(i);
       uv[i * 2] = q.x / W;
       uv[i * 2 + 1] = 1 - q.y / H;
-      let w = smoothstep(-fade * 0.3, fade, signedDistance(q, oval));
-      if (useNormals) w *= smoothstep(0.15, 0.5, p.nz);
-      weight[i] = w;
-    });
+      weight[i] = weightOf(q, i);
+      hairMix[i] = scalpOf(i);
+    }
     const g = mesh.geometry;
     const saved = { uv: g.attributes.uv, material: mesh.material };
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     g.setAttribute('faceWeight', new THREE.BufferAttribute(weight, 1));
-    return () => {
+    g.setAttribute('hairMix', new THREE.BufferAttribute(hairMix, 1));
+    undo.push(() => {
       if (saved.uv) g.setAttribute('uv', saved.uv); else g.deleteAttribute('uv');
       g.deleteAttribute('faceWeight');
+      g.deleteAttribute('hairMix');
       mesh.material = saved.material;
-    };
+    });
   }
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.anisotropy = 4;
-  const mat = photoMaterial(texture, sampleSkin(canvas, lm));
+  const mat = photoMaterial(texture, sampleSkin(canvas, lm), hairColor);
 
-  const undo = [build(head, headPts, true, headMap)];
+  build(head, headPts.length, headMap, (q, i) => {
+    const p = headPts[i];
+    const face = smoothstep(-fade * 0.3, fade, signedDistance(q, oval)) * smoothstep(0.15, 0.5, p.nz);
+    // 머리카락: 사진에서 머리카락인 곳은 사진 그대로 (뒤통수는 앞머리를 그대로 이어 쓴다)
+    const h = hairColor ? hairAt(hair, q.x, q.y, W, H) * smoothstep(bottom + hgt * 0.45, bottom + hgt * 0.6, p.y) : 0;
+    return Math.max(face, h);
+  }, (i) => scalp(headPts[i]));
   eyes.forEach((e, k) => {
-    undo.push(build(e, localPoints(e, toLocal, false), false, (p, i) => eyeMap(p, i, k)));
+    build(e, e.geometry.attributes.position.count, (i) => eyeMap(k, i), () => 1, () => 0);
   });
   head.material = mat;
   for (const e of eyes) e.material = mat;
 
   return () => {
-    undo.forEach((fn) => fn());
+    undo.reverse().forEach((fn) => fn());
     texture.dispose();
     mat.dispose();
   };
