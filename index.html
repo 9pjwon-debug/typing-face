@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#111214" />
+<meta name="description" content="내가 치는 글자마다 표정이 바뀌는 3D 얼굴" />
+<title>표정 더미</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🙂</text></svg>" />
+<link rel="stylesheet" href="face.css" />
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>내가 치는 글자마다<br />표정이 바뀌는 AI</h1>
+  </header>
+
+  <div id="stage">
+    <canvas id="scene"></canvas>
+    <div id="loading">얼굴 불러오는 중...</div>
+  </div>
+
+  <form id="panel" autocomplete="off">
+    <textarea id="text" rows="2" maxlength="200" placeholder="아무 말이나 쳐보세요"></textarea>
+    <div class="row">
+      <span id="status"><i class="dot"></i><span id="status-text">입력을 기다리는 중</span></span>
+      <button type="button" id="clear">지우기</button>
+    </div>
+    <div id="mode"></div>
+  </form>
+</div>
+
+<script type="module" src="face.js"></script>
+</body>
+</html>
