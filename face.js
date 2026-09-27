@@ -17,39 +17,77 @@ import { EMOTIONS, localGuess } from './keywords.js';
 import { preloadLandmarker, preloadHairSegmenter, fileToCanvas, detectFace, detectHair, applyPhoto, measureDummy } from './photo.js';
 
 const COLORS = {
-  joy: '#ffd84d', sad: '#6aa8ff', angry: '#ff5a4f', surprise: '#ff9f43',
-  fear: '#a98bff', disgust: '#7bd88f', shy: '#ff8fb8', neutral: '#8c909a'
+  joy: '#ffd84d', excited: '#ff8c1a', love: '#ff4f81', touched: '#ffb3c7', proud: '#e0b000', shy: '#ff8fb8',
+  sad: '#6aa8ff', sulky: '#8b9dff', tired: '#9aa0a6', angry: '#ff5a4f', contempt: '#c77dff', disgust: '#7bd88f',
+  surprise: '#ffa94d', fear: '#a98bff', confused: '#3ddbd9', thinking: '#74c0fc', neutral: '#8c909a'
 };
 
 /* ------------------------- 표정 프리셋 -------------------------
    이름은 ARKit blendshape 기준. 좌우가 있는 것은 _L/_R 을 붙이지 않고 쓰면
-   양쪽에 같은 값이 들어간다. blush 는 볼 홍조(모델 밖 효과). */
+   양쪽에 같은 값이 들어간다 (한쪽만 쓰면 비대칭 표정: 썩소, 한쪽 눈썹 등).
+   blush 는 볼 홍조, headX/headY/headZ 는 고개 (끄덕임/돌림/갸웃, 라디안). */
 const PRESETS = {
   joy: {
     mouthSmile: 0.95, cheekSquint: 0.7, eyeSquint: 0.55, mouthDimple: 0.3,
     mouthUpperUp: 0.25, jawOpen: 0.12, browOuterUp: 0.15, blush: 0.5
   },
-  sad: {
-    mouthFrown: 0.85, browInnerUp: 0.95, mouthLowerDown: 0.15, mouthRollLower: 0.2,
-    eyeSquint: 0.2, eyeLookDown: 0.35
+  excited: {
+    mouthSmile: 1, jawOpen: 0.4, eyeWide: 0.45, browOuterUp: 0.7, browInnerUp: 0.35,
+    cheekSquint: 0.4, mouthUpperUp: 0.35, blush: 0.4, headX: -0.07
   },
-  angry: {
-    browDown: 1, noseSneer: 0.9, eyeSquint: 0.7, mouthPress: 0.8,
-    mouthFrown: 0.6, mouthUpperUp: 0.25, jawForward: 0.25
+  love: {
+    mouthSmile: 0.85, eyeSquint: 0.45, eyeBlink: 0.35, cheekSquint: 0.5, browInnerUp: 0.25,
+    mouthPucker: 0.15, blush: 1, headZ: 0.1
   },
-  surprise: {
-    jawOpen: 0.55, browInnerUp: 0.9, browOuterUp: 0.9, eyeWide: 0.9, mouthFunnel: 0.3
+  touched: {
+    mouthSmile: 0.45, browInnerUp: 0.95, eyeSquint: 0.55, mouthPress: 0.35,
+    mouthRollLower: 0.15, blush: 0.5, headX: 0.05
   },
-  fear: {
-    browInnerUp: 1, browOuterUp: 0.3, eyeWide: 0.75, mouthStretch: 0.6, jawOpen: 0.15
-  },
-  disgust: {
-    noseSneer: 1, mouthUpperUp: 0.6, browDown: 0.5, eyeSquint: 0.5,
-    mouthFrown: 0.3, mouthLeft: 0.25
+  proud: {
+    mouthSmile_L: 0.95, mouthSmile_R: 0.45, mouthDimple_L: 0.5, eyeSquint: 0.4, cheekSquint_L: 0.4,
+    browOuterUp_L: 0.4, mouthPress: 0.25, headX: -0.15, headZ: -0.05
   },
   shy: {
     mouthSmile: 0.45, eyeLookDown: 0.6, eyeSquint: 0.3, browInnerUp: 0.3,
-    mouthPucker: 0.2, blush: 1
+    mouthPucker: 0.2, blush: 1, headX: 0.08, headZ: 0.06
+  },
+  sad: {
+    mouthFrown: 0.85, browInnerUp: 0.95, mouthLowerDown: 0.15, mouthRollLower: 0.2,
+    eyeSquint: 0.2, eyeLookDown: 0.35, headX: 0.09
+  },
+  sulky: {
+    mouthPucker: 0.7, mouthFrown: 0.5, browDown: 0.45, browInnerUp: 0.3, cheekPuff: 0.35,
+    mouthRollLower: 0.2, eyeLookOut_L: 0.55, eyeLookIn_R: 0.55, headY: 0.18, headX: 0.04
+  },
+  tired: {
+    eyeBlink: 0.5, eyeLookDown: 0.3, mouthFrown: 0.2, browInnerUp: 0.2, jawOpen: 0.06,
+    mouthLowerDown: 0.1, headX: 0.1, headZ: 0.06
+  },
+  angry: {
+    browDown: 1, noseSneer: 0.9, eyeSquint: 0.7, mouthPress: 0.8,
+    mouthFrown: 0.6, mouthUpperUp: 0.25, jawForward: 0.25, headX: 0.05
+  },
+  contempt: {
+    mouthSmile_R: 0.6, mouthDimple_R: 0.45, noseSneer_R: 0.35, eyeSquint: 0.3, browDown_L: 0.35,
+    browOuterUp_R: 0.45, eyeLookUp: 0.35, headX: -0.06, headY: -0.1
+  },
+  disgust: {
+    noseSneer: 1, mouthUpperUp: 0.6, browDown: 0.5, eyeSquint: 0.5,
+    mouthFrown: 0.3, mouthLeft: 0.25, headY: 0.08, headX: -0.03
+  },
+  surprise: {
+    jawOpen: 0.55, browInnerUp: 0.9, browOuterUp: 0.9, eyeWide: 0.9, mouthFunnel: 0.3, headX: -0.05
+  },
+  fear: {
+    browInnerUp: 1, browOuterUp: 0.3, eyeWide: 0.75, mouthStretch: 0.6, jawOpen: 0.15, headX: 0.04
+  },
+  confused: {
+    browOuterUp_L: 1, browInnerUp: 0.35, browDown_R: 0.7, eyeSquint_R: 0.4, eyeWide_L: 0.3,
+    mouthLeft: 0.6, mouthStretch_L: 0.3, mouthPress_L: 0.3, headZ: 0.18
+  },
+  thinking: {
+    eyeLookUp: 0.6, eyeLookOut_R: 0.45, eyeLookIn_L: 0.45, eyeSquint: 0.25, mouthPucker: 0.35,
+    mouthRight: 0.5, mouthPress: 0.4, browDown_R: 0.45, browOuterUp_L: 0.3, headZ: -0.1, headY: -0.12
   }
 };
 
@@ -174,20 +212,30 @@ function addShape(out, name, v) {
   for (const n of names) out[n] = Math.min(1, (out[n] || 0) + v);
 }
 
+const HEAD = ['headX', 'headY', 'headZ'];
+const headTarget = { headX: 0, headY: 0, headZ: 0 };
+const headNow = { headX: 0, headY: 0, headZ: 0 };
+
 function applyMix(mix) {
   const out = {};
   let blush = 0;
+  const head = { headX: 0, headY: 0, headZ: 0 };
+  let total = 0;
   for (const e of EMOTIONS) {
     const w = mix[e] || 0;
-    if (!w) continue;
+    if (!w || !PRESETS[e]) continue;
+    total += w;
     for (const [name, v] of Object.entries(PRESETS[e])) {
       if (name === 'blush') blush = Math.max(blush, v * w);
+      else if (name in head) head[name] += v * w;
       else addShape(out, name, v * w);
     }
   }
   for (const k in target) target[k] = 0;
   Object.assign(target, out);
   blushTarget = blush;
+  // 고개는 섞인 감정의 가중 평균 (여러 감정이 겹쳐도 과하게 꺾이지 않게)
+  for (const k of HEAD) headTarget[k] = total ? head[k] / Math.max(1, total) : 0;
 }
 
 /* ------------------------- 살아있는 느낌 ------------------------- */
@@ -221,8 +269,10 @@ function frame(now) {
 
   // 숨쉬기 + 살짝 고개 흔들기
   const t = now / 1000;
-  pivot.rotation.y = Math.sin(t * 0.5) * 0.06;
-  pivot.rotation.x = Math.sin(t * 0.7) * 0.025;
+  for (const k of HEAD) headNow[k] += (headTarget[k] - headNow[k]) * 0.12;
+  pivot.rotation.y = Math.sin(t * 0.5) * 0.06 + headNow.headY;
+  pivot.rotation.x = Math.sin(t * 0.7) * 0.025 + headNow.headX;
+  pivot.rotation.z = headNow.headZ;
   pivot.position.y = Math.sin(t * 1.6) * 0.002;
 
   renderer.render(scene, camera);

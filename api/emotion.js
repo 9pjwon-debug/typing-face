@@ -24,7 +24,12 @@
 var crypto = require('node:crypto');
 var client = require('./redis-client.js');
 
-var EMOTIONS = ['joy', 'sad', 'angry', 'surprise', 'fear', 'disgust', 'shy'];
+// keywords.js 의 EMOTIONS 와 같은 목록 (순서 무관)
+var EMOTIONS = [
+  'joy', 'excited', 'love', 'touched', 'proud', 'shy',
+  'sad', 'sulky', 'tired', 'angry', 'contempt', 'disgust',
+  'surprise', 'fear', 'confused', 'thinking'
+];
 var MAIN = EMOTIONS.concat(['neutral']);
 
 var MODEL = process.env.EMOTION_MODEL || 'gemini-3.5-flash-lite';
@@ -42,10 +47,15 @@ var SYSTEM = [
   '"근데/하지만/~는데/~지만" 같은 반전이나 "~지 않다/안 ~" 같은 부정이 나오면 뒤쪽 의미를 따른다.',
   '예: "나는 너가 사실 사랑" → joy, "나는 너가 사실 사랑스럽지 않다고" → angry 위주(못마땅), "어제는 행복했는데 오늘은 슬퍼" → sad.',
   'mix 는 각 감정의 세기(0~1)이며, 여러 감정이 섞일 수 있다. 감정이 없으면 모두 0 에 가깝게 둔다.',
-  'shy 는 부끄러움·설렘·수줍음이다. 칭찬을 받거나 고백하는 말이면 joy 와 shy 를 함께 올린다.',
+  '감정 뜻: joy 기쁨·만족, excited 신남·기대·들뜸, love 애정·사랑 고백, touched 감동·고마움에 뭉클,',
+  'proud 뿌듯·자랑·으쓱, shy 부끄러움·설렘·수줍음(칭찬받거나 고백받을 때), sad 슬픔·우울·상실,',
+  'sulky 삐짐·서운함·억울함(토라짐), tired 피곤·졸림·지루함·귀찮음, angry 화남·짜증·분노,',
+  'contempt 어이없음·비웃음·한심함, disgust 역겨움·불쾌, surprise 놀람·감탄, fear 두려움·걱정·긴장,',
+  'confused 어리둥절·당황·이해 안 됨, thinking 고민·망설임·생각 중.',
+  '가장 알맞은 1~2개를 크게 올리고 나머지는 0 에 가깝게 둔다.',
   'main 은 가장 두드러진 감정(감정이 거의 없으면 neutral), label 은 그 감정을 나타내는 한국어 한 단어(예: 기쁨, 설렘, 서운함, 짜증)다.',
   '다른 말 없이 JSON 하나만 출력한다. 형식:',
-  '{"main":"joy|sad|angry|surprise|fear|disgust|shy|neutral","label":"기쁨","mix":{"joy":0.8,"sad":0,"angry":0,"surprise":0.1,"fear":0,"disgust":0,"shy":0.3}}'
+  '{"main":"' + MAIN.join('|') + '","label":"설렘","mix":{' + EMOTIONS.map(function (e) { return '"' + e + '":' + (e === 'shy' ? 0.8 : e === 'joy' ? 0.4 : 0); }).join(',') + '}}'
 ].join('\n');
 
 var SCHEMA = {
@@ -81,7 +91,7 @@ function limited(ip) {
 
 function cacheKey(text) {
   var h = crypto.createHash('sha256').update(MODEL + '\n' + text).digest('hex').slice(0, 32);
-  return 'face:emo:' + h;
+  return 'face:emo2:' + h;
 }
 
 function dayKey() {
