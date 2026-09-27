@@ -268,14 +268,22 @@ function setStatus(kind, text, color) {
 }
 
 /* 표정 유지: 새 판단에서 감정이 나왔을 때만 표정을 바꾼다.
-   판단 결과가 무표정(감정 없음)이거나 입력을 지우는 중이면 가장 최근 표정을 그대로 둔다.
-   지우기 버튼을 누를 때만 무표정으로 돌아간다. */
+   판단 결과가 무표정(감정 없음)이면 가장 최근 표정을 그대로 둔다.
+   무표정으로 돌아가는 때: 입력을 전부 지웠을 때, 지우기 버튼, 한동안(IDLE_RESET) 입력이 없을 때. */
+const IDLE_RESET = 10000;
 let shown = null;          // 지금 얼굴에 떠 있는 판단 결과 (null = 무표정)
+let idleTimer = 0;
+
+function restartIdle() {
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(resetFace, IDLE_RESET);
+}
 
 function show(result) {
   if (result.main !== 'neutral') {
     shown = result;
     applyMix(result.mix);
+    restartIdle();
   }
   showStatus();
 }
@@ -293,11 +301,12 @@ function resetFace() {
 
 function schedule() {
   clearTimeout(timer);
+  restartIdle();
   const text = norm(input.value);
   if (!text) {
     ctrl && ctrl.abort();
     lastText = '';
-    showStatus();
+    resetFace();
     return;
   }
   if (text === lastText) return;
