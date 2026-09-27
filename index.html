@@ -24,11 +24,14 @@
       <h1>눈치 백단 더미</h1>
       <p class="sub">뭐라고 치든 표정으로 대답해요</p>
     </div>
-    <button type="button" id="change-photo" aria-label="사진 바꾸기">📷</button>
   </header>
 
   <div id="stage">
     <canvas id="scene"></canvas>
+    <div id="face-tools">
+      <button type="button" id="change-photo">📷 내 사진 입히기</button>
+      <button type="button" id="original-face" hidden>↩ 원래 더미로</button>
+    </div>
     <div id="loading">얼굴 불러오는 중...</div>
   </div>
 

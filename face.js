@@ -408,6 +408,21 @@ const introMsg = document.getElementById('intro-msg');
 const removePhotoBtn = document.getElementById('remove-photo');
 let undoPhoto = null;
 
+const changePhotoBtn = document.getElementById('change-photo');
+const originalBtn = document.getElementById('original-face');
+
+/** 얼굴 위 버튼 글자/표시를 사진 상태에 맞춘다 */
+function updateTools() {
+  changePhotoBtn.textContent = undoPhoto ? '📷 사진 바꾸기' : '📷 내 사진 입히기';
+  originalBtn.hidden = !undoPhoto;
+}
+
+function useOriginalFace() {
+  if (undoPhoto) undoPhoto();
+  undoPhoto = null;
+  updateTools();
+}
+
 function openIntro() {
   intro.hidden = false;
   document.body.classList.add('intro-open');
@@ -417,6 +432,7 @@ function openIntro() {
 }
 
 function closeIntro() {
+  updateTools();
   intro.hidden = true;
   document.body.classList.remove('intro-open');
   input.focus({ preventScroll: true });
@@ -550,10 +566,10 @@ document.getElementById('cam-shot').addEventListener('click', () => {
 });
 
 document.getElementById('skip').addEventListener('click', closeIntro);
-document.getElementById('change-photo').addEventListener('click', openIntro);
+changePhotoBtn.addEventListener('click', openIntro);
+originalBtn.addEventListener('click', useOriginalFace);
 removePhotoBtn.addEventListener('click', () => {
-  if (undoPhoto) undoPhoto();
-  undoPhoto = null;
+  useOriginalFace();
   closeIntro();
 });
 
