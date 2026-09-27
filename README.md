@@ -1,6 +1,7 @@
-# 표정 더미 (typing-face)
+# 눈치 백단 더미 (typing-face)
 
-**내가 치는 글자마다 표정이 바뀌는 3D 얼굴.**
+**뭐라고 치든 표정으로 대답해요.** 내가 치는 글자마다 표정이 바뀌는 3D 얼굴.
+첫 화면에서 **내 사진을 올리면 더미가 내 얼굴로** 웃고, 삐지고, 놀란다.
 글을 입력하면 Google Gemini(무료 등급)가 감정을 판단하고, 3D 얼굴이 그 감정에 맞게 표정을 바꾼다.
 순수 HTML / CSS / JS 에 Vercel 서버리스 함수 하나로 동작한다. 빌드 도구도 npm 의존성도 없다.
 
@@ -51,6 +52,26 @@
 | `status: 404` | 모델 이름이 없음 → `EMOTION_MODEL` 을 AI Studio 에 보이는 모델 이름으로 |
 | `status: 429` | 무료 한도 초과 |
 
+## 사진 입히기
+
+첫 화면의 **📷 내 사진 입히기** → 사진 선택 (폰에서는 카메라로 바로 찍기도 된다).
+오른쪽 위 📷 버튼으로 언제든 사진을 바꾸거나 뺄 수 있다.
+
+```
+사진 ─ MediaPipe Face Landmarker (브라우저 안, 서버 전송 없음) → 얼굴 점 478개
+     ─ 사진의 눈·코·입·턱 5점 ↔ 3D 얼굴의 같은 5점을 맞추는 affine 변환
+     ─ 3D 얼굴의 꼭짓점마다 정면에서 사진 위로 투영해 텍스처 좌표로 사용
+       → 사진이 얼굴 표면에 붙어서 표정(blendshape)을 따라 같이 움직인다
+     ─ 사진의 얼굴 윤곽 바깥(머리·귀·옆면)은 볼·이마에서 뽑은 피부색으로 섞는다
+```
+
+- **사진은 서버로 올라가지 않는다.** 얼굴 인식도 입히기도 모두 브라우저 안에서 한다.
+- 얼굴 인식 코드는 사진을 고를 때만 불러온다 (그냥 시작하면 받지 않는다).
+  모델 파일은 `models/face_landmarker.task` (3.7MB, Apache-2.0), 실행 코드는 jsDelivr 의 `@mediapipe/tasks-vision@1.0.1`.
+- 잘 나오는 사진: 정면, 무표정, 밝고 얼굴이 크게 나온 사진. 웃는 사진이면 화난 표정에도 이가 보이고,
+  옆얼굴이면 한쪽이 늘어나 보인다. 얼굴 모양은 더미 그대로라 "내 얼굴 가면을 쓴 더미" 느낌이다.
+- 본인 사진이나 허락받은 사진만 쓰도록 첫 화면에 안내한다.
+
 ## 로컬에서 보기
 
 ```bash
@@ -63,14 +84,16 @@ AI 판단까지 로컬에서 보려면 `vercel dev` 를 쓴다.
 ## 파일
 
 ```
-index.html           화면 (Three.js 는 jsDelivr CDN + importmap)
+index.html           첫 화면 + 본 화면 (Three.js 는 jsDelivr CDN + importmap)
 face.css             레이아웃
+photo.js             사진 → 얼굴 점 인식(MediaPipe) → 3D 얼굴에 입히기
 keywords.js          AI 없이 바로 하는 키워드 감정 판단 (사전, 부정·강조 처리)
 face.js              3D 장면, 감정 → 표정 프리셋, 입력 처리(한글 조합·디바운스·요청 취소·캐시)
 api/emotion.js       감정 판단 서버리스 함수. Gemini generateContent API 를 fetch 로 호출,
                      JSON 스키마(structured outputs)로 응답 형식을 고정
 api/redis-client.js  의존성 없는 Redis 클라이언트 (REST / redis:// 모두 지원, 선택)
 models/face.glb      얼굴 모델 (ARKit 52 blendshape)
+models/face_landmarker.task  MediaPipe 얼굴 점 인식 모델
 ```
 
 ## API 호출 줄이기

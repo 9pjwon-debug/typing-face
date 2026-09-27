@@ -4,8 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <meta name="theme-color" content="#111214" />
-<meta name="description" content="내가 치는 글자마다 표정이 바뀌는 3D 얼굴" />
-<title>표정 더미</title>
+<meta name="description" content="눈치 백단 더미 - 뭐라고 치든 표정으로 대답하는 3D 얼굴" />
+<title>눈치 백단 더미</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🙂</text></svg>" />
 <link rel="stylesheet" href="face.css" />
 <script type="importmap">
@@ -17,10 +17,14 @@
 }
 </script>
 </head>
-<body>
+<body class="intro-open">
 <div id="app">
   <header>
-    <h1>내가 치는 글자마다<br />표정이 바뀌는 AI</h1>
+    <div class="titles">
+      <h1>눈치 백단 더미</h1>
+      <p class="sub">뭐라고 치든 표정으로 대답해요</p>
+    </div>
+    <button type="button" id="change-photo" aria-label="사진 바꾸기">📷</button>
   </header>
 
   <div id="stage">
@@ -36,6 +40,30 @@
     </div>
     <div id="mode"></div>
   </form>
+
+  <!-- 첫 화면 -->
+  <section id="intro">
+    <div class="intro-card">
+      <p class="kicker">뭐라고 치든 표정으로 대답해요</p>
+      <h2>눈치 백단 더미</h2>
+      <p class="desc">내 사진을 입히면 더미가 <b>내 얼굴로</b><br />웃고, 삐지고, 놀라요.</p>
+
+      <label class="btn primary" id="photo-btn">
+        📷 내 사진 입히기
+        <input type="file" id="photo" accept="image/*" hidden />
+      </label>
+      <button type="button" class="btn" id="skip">그냥 더미로 시작</button>
+      <button type="button" class="btn link" id="remove-photo" hidden>사진 빼고 원래 더미로</button>
+
+      <p id="intro-msg" role="status"></p>
+
+      <ul class="tips">
+        <li>정면을 보고, 무표정인, 밝은 사진이 제일 잘 나와요</li>
+        <li>사진은 서버로 올라가지 않고 이 기기 안에서만 처리돼요</li>
+        <li>본인 사진이나 허락받은 사진만 써주세요</li>
+      </ul>
+    </div>
+  </section>
 </div>
 
 <script type="module" src="face.js"></script>

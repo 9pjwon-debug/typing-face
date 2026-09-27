@@ -6,6 +6,7 @@
         → 매 프레임 목표값으로 부드럽게 이동
 
    서버에 API 키가 없으면 브라우저 안의 키워드 판단(localGuess)으로 대신한다.
+   첫 화면에서 사진을 고르면 photo.js 가 사진 속 얼굴을 3D 얼굴에 입힌다.
    얼굴 모델: models/face.glb (three.js 예제 facecap.glb, ARKit 52 blendshape)
    =================================================================== */
 
@@ -13,6 +14,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { EMOTIONS, localGuess } from './keywords.js';
+import { preloadLandmarker, fileToCanvas, detectFace, applyPhoto } from './photo.js';
 
 const COLORS = {
   joy: '#ffd84d', sad: '#6aa8ff', angry: '#ff5a4f', surprise: '#ff9f43',
@@ -77,6 +79,10 @@ const eyeMat = new THREE.MeshStandardMaterial({ color: 0x3a3c42, roughness: 0.3 
 const teethMat = new THREE.MeshStandardMaterial({ color: 0xf1ede4, roughness: 0.5 });
 
 let face = null;        // blendshape 가 있는 mesh
+const eyes = [];
+const teeth = [];
+let resolveModel;
+const modelReady = new Promise((r) => { resolveModel = r; });
 let blushSprites = [];
 const target = {};      // 목표 blendshape 값 (이름 → 0~1)
 let blushTarget = 0;
@@ -120,8 +126,10 @@ loader.load('models/face.glb', (gltf) => {
       o.material = skin;
     } else if (name.includes('eye')) {
       o.material = eyeMat;
+      eyes.push(o);
     } else if (name.includes('teeth')) {
       o.material = teethMat;
+      teeth.push(o);
     } else {
       o.material = skin;
     }
@@ -151,6 +159,7 @@ loader.load('models/face.glb', (gltf) => {
   }
 
   document.getElementById('loading').hidden = true;
+  resolveModel();
 }, undefined, (err) => {
   document.getElementById('loading').textContent = '얼굴 모델을 불러오지 못했어요';
   console.error(err);
@@ -380,6 +389,71 @@ document.getElementById('clear').addEventListener('click', () => {
   schedule();
   resetFace();
   input.focus();
+});
+
+/* ------------------------- 첫 화면: 사진 입히기 ------------------------- */
+
+const intro = document.getElementById('intro');
+const photoInput = document.getElementById('photo');
+const introMsg = document.getElementById('intro-msg');
+const removePhotoBtn = document.getElementById('remove-photo');
+let undoPhoto = null;
+
+function openIntro() {
+  intro.hidden = false;
+  document.body.classList.add('intro-open');
+  removePhotoBtn.hidden = !undoPhoto;
+  introMsg.textContent = '';
+  introMsg.className = '';
+}
+
+function closeIntro() {
+  intro.hidden = true;
+  document.body.classList.remove('intro-open');
+  input.focus({ preventScroll: true });
+}
+
+function setIntroMsg(text, kind) {
+  introMsg.textContent = text;
+  introMsg.className = kind || '';
+}
+
+// 사진 고르는 창이 열리는 동안 얼굴 인식 도구를 미리 받아둔다
+document.getElementById('photo-btn').addEventListener('click', () => {
+  preloadLandmarker().catch(() => {});
+});
+
+photoInput.addEventListener('change', async () => {
+  const file = photoInput.files && photoInput.files[0];
+  photoInput.value = '';
+  if (!file) return;
+  intro.classList.add('working');
+  setIntroMsg('얼굴 찾는 중...', 'busy');
+  try {
+    const [canvasImg] = await Promise.all([fileToCanvas(file), modelReady]);
+    const lm = await detectFace(canvasImg);
+    if (!lm) {
+      setIntroMsg('얼굴을 찾지 못했어요. 얼굴이 크게 나온 정면 사진으로 다시 해보세요.', 'error');
+      return;
+    }
+    if (eyes.length !== 2) throw new Error('3D 얼굴의 눈을 찾지 못했어요');
+    if (undoPhoto) undoPhoto();
+    undoPhoto = applyPhoto({ pivot, head: face, eyes, teeth }, canvasImg, lm);
+    closeIntro();
+  } catch (err) {
+    console.error(err);
+    setIntroMsg('사진을 처리하지 못했어요. 다른 사진으로 해보거나 잠시 후 다시 시도해주세요.', 'error');
+  } finally {
+    intro.classList.remove('working');
+  }
+});
+
+document.getElementById('skip').addEventListener('click', closeIntro);
+document.getElementById('change-photo').addEventListener('click', openIntro);
+removePhotoBtn.addEventListener('click', () => {
+  if (undoPhoto) undoPhoto();
+  undoPhoto = null;
+  closeIntro();
 });
 
 // 디버깅용: 콘솔에서 Face.mix({joy:1}) 처럼 표정을 직접 줄 수 있다
