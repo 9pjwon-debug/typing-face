@@ -258,9 +258,28 @@ function setStatus(kind, text, color) {
   status.querySelector('.dot').style.background = color || '';
 }
 
+/* 표정 유지: 새 판단에서 감정이 나왔을 때만 표정을 바꾼다.
+   판단 결과가 무표정(감정 없음)이거나 입력을 지우는 중이면 가장 최근 표정을 그대로 둔다.
+   지우기 버튼을 누를 때만 무표정으로 돌아간다. */
+let shown = null;          // 지금 얼굴에 떠 있는 판단 결과 (null = 무표정)
+
 function show(result) {
-  applyMix(result.mix);
-  setStatus('done', `지금 ${result.label}`, COLORS[result.main]);
+  if (result.main !== 'neutral') {
+    shown = result;
+    applyMix(result.mix);
+  }
+  showStatus();
+}
+
+function showStatus() {
+  if (shown) setStatus('done', `지금 ${shown.label}`, COLORS[shown.main]);
+  else setStatus('', '입력을 기다리는 중');
+}
+
+function resetFace() {
+  shown = null;
+  applyMix({});
+  showStatus();
 }
 
 function schedule() {
@@ -269,8 +288,7 @@ function schedule() {
   if (!text) {
     ctrl && ctrl.abort();
     lastText = '';
-    applyMix({});
-    setStatus('', '입력을 기다리는 중');
+    showStatus();
     return;
   }
   if (text === lastText) return;
@@ -287,8 +305,12 @@ function schedule() {
   }
 
   // AI 를 기다리는 동안에도 표정은 바로 반응하게 키워드 판단을 먼저 보여준다
-  if (guess.main !== 'neutral') applyMix(guess.mix);
-  setStatus('busy', '더미가 판단하는 중...');
+  // (감정이 안 잡히면 최근 표정 유지)
+  if (guess.main !== 'neutral') {
+    shown = guess;
+    applyMix(guess.mix);
+  }
+  setStatus('busy', '더미가 판단하는 중...', shown ? COLORS[shown.main] : '');
   timer = setTimeout(() => judge(text), AI_DELAY);
 }
 
@@ -356,6 +378,7 @@ document.getElementById('panel').addEventListener('submit', (e) => e.preventDefa
 document.getElementById('clear').addEventListener('click', () => {
   input.value = '';
   schedule();
+  resetFace();
   input.focus();
 });
 
